@@ -31,23 +31,24 @@
 #define NL_TONEMAP_TYPE 4              // 1:Exponential, 2:Reinhard, 3:Extended Reinhard, 4:ACES
 #define NL_GAMMA 1.1                  // 0.3 low ~ 2.0 high
 //#define NL_EXPOSURE 1.3              // [toggle] 0.5 dark ~ 3.0 bright
-#define NL_SATURATION 1.2            // [toggle] 0.0 grayscale ~ 4.0 super saturated
+#define NL_SATURATION 0.9            // [toggle] 0.0 grayscale ~ 4.0 super saturated
 #define NL_TINT                      // [toggle] enable light/dark tone tinting
 #define NL_TINT_LOW  vec3(0.95,0.9,0.8) // color tint for dark tone
-#define NL_TINT_HIGH vec3(1.4,1.0,0.6) // color tint for light tone
+#define NL_TINT_HIGH vec3(1.2,0.8,0.6) // color tint for light tone
 
 /* Terrain lighting */
 #define NL_SUN_INTENSITY 2.6   // 0.5 weak ~ 5.0 bright
 #define NL_TORCH_INTENSITY 1.4  // 0.5 weak ~ 3.0 bright
 #define NL_NIGHT_BRIGHTNESS 0.1 // 0.0 dark ~ 2.0 bright
 #define NL_CAVE_BRIGHTNESS 0.25  // 0.0 dark ~ 2.0 bright
-#define NL_SHADOW_INTENSITY 0.4 // 0.0 no shadow ~ 1.0 strong shadow
+#define NL_GROUND_SATURATION 0.8  // 0.0 black n white, 1.0 original saturation, >1.0 exagerated
+#define NL_SHADOW_INTENSITY 0.6 // 0.0 no shadow ~ 1.0 strong shadow
 #define NL_BLINKING_TORCH     // [toggle] flickering light
 //#define NL_CLOUD_SHADOW       // [toggle] cloud shadow (simple clouds only)
 
 /* Sun/moon light color on terrain */
 #define NL_MORNING_SUN_COL vec3(1.0,0.45,0.14)
-#define NL_NOON_SUN_COL    vec3(1.0,0.75,0.5)
+#define NL_NOON_SUN_COL    vec3(1.0,0.65,0.5)
 #define NL_NIGHT_SUN_COL   vec3(0.8,0.75,0.7)
 
 /* Ambient light on terrain (light that is added everywhere) */
