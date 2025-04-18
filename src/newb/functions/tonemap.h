@@ -39,9 +39,10 @@ vec3 colorCorrection(vec3 col) {
     col *= mix(NL_TINT_LOW, NL_TINT_HIGH, col);
   #endif
 
-  float isGround;
+  return col;
+}
 
-vec3 tonemap(vec3 col) {
+vec3 tonemap(vec3 col, float isGround) {
     const float a = 1.04;
     const float b = 0.03;
     const float c = 0.93;
@@ -61,7 +62,7 @@ vec3 tonemap(vec3 col) {
     // Ensure 'isGround' is clamped between 0.0 and 1.0
     col = mix(col, mix(vec3(scalar), col, 0.8), clamp(isGround, 0.0, 1.0));
 
-  return col;
+    return col;
 }
 
 // inv used in fogcolor for nether
