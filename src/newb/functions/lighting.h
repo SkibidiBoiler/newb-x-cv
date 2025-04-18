@@ -7,6 +7,16 @@
 #include "noise.h"
 #include "clouds.h"
 
+#ifndef NL_OVERWORLD_TORCH_COL
+    #define NL_OVERWORLD_TORCH_COL vec3(1.0, 0.3, 0.1)
+#endif
+#ifndef NL_TORCH_INTENSITY
+    #define NL_TORCH_INTENSITY 1.5
+#endif
+#ifndef NL_GROUND_SATURATION
+    #define NL_GROUND_SATURATION 0.7
+#endif
+
 // sunlight tinting
 vec3 sunLightTint(float dayFactor, float rain, vec3 FOG_COLOR) {
 
@@ -15,7 +25,7 @@ vec3 sunLightTint(float dayFactor, float rain, vec3 FOG_COLOR) {
   float morning = clamp((tintFactor-0.05)*3.125,0.0,1.0);
 
   vec3 clearTint = mix(
-    mix(NL_NIGHT_SUN_COL, NL_MORNING_SUN_COL, morning),
+    mix(vex3(0.8,0.4,0.6), NL_MORNING_SUN_COL, morning),
     mix(NL_MORNING_SUN_COL, NL_NOON_SUN_COL, noon),
     dayFactor
   );
@@ -95,6 +105,8 @@ vec3 nlLighting(
 
   // darken at crevices
   light *= COLOR.g > 0.35 ? 1.0 : 0.8;
+  vec3 groundDesaturated = mix(vec3(dot(light, vec3(0.3, 0.6, 0.1))), light, NL_GROUND_SATURATION);
+light = mix(light, groundDesaturated, step(0.1, COLOR.r));
 
   // brighten tree leaves
   if (isTree) {
