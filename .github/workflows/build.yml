@@ -38,17 +38,18 @@ jobs:
     - run: |
         .\build.bat setup
         .\build.bat pack -p windows -v ${{ inputs.subversion }}
+        Get-ChildItem -Path ./build
         $mcpack = Get-ChildItem -Path ./build -Filter "*.mcpack" | Select-Object -First 1
         if ($mcpack) {
-          Rename-Item -Path $mcpack.FullName -NewName "newb-x-cv-windows.mcpack"
+        Rename-Item -Path $mcpack.FullName -NewName "newb-x-windows.mcpack"
         } else {
-          Write-Error "No se encontró ningún archivo .mcpack. Revisa el comando de build."
-          exit 1
+        Write-Error "No .mcpack file found. Check build.bat or shader compilation."
+        exit 1
         }
     - uses: actions/upload-artifact@v4
       with:
-        name: newb-x-cv-windows.mcpack
-        path: ./build/newb-x-cv-windows.mcpack
+        name: newb-x-windows.mcpack
+        path: ./build/newb-x-windows.mcpack
 
   android:
     runs-on: ubuntu-latest
@@ -71,8 +72,8 @@ jobs:
         mv ./build/pack-android.zip newb-x-android.mcpack
     - uses: actions/upload-artifact@v4
       with:
-        name: newb-x-cv-android.mcpack
-        path: ./newb-x-cv-android.mcpack
+        name: newb-x-android.mcpack
+        path: ./newb-x-android.mcpack
 
   ios:
     runs-on: ubuntu-latest
