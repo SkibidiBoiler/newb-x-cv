@@ -38,7 +38,13 @@ jobs:
     - run: |
         .\build.bat setup
         .\build.bat pack -p windows -v ${{ inputs.subversion }}
-        Rename-Item -Path ./build/pack-windows.zip -NewName newb-x-windows.mcpack
+        $mcpack = Get-ChildItem -Path ./build -Filter "*.mcpack" | Select-Object -First 1
+        if ($mcpack) {
+          Rename-Item -Path $mcpack.FullName -NewName "newb-x-windows.mcpack"
+        } else {
+          Write-Error "No se encontró ningún archivo .mcpack en ./build"
+          exit 1
+        }
     - uses: actions/upload-artifact@v4
       with:
         name: newb-x-windows.mcpack
