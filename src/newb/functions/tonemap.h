@@ -1,7 +1,5 @@
 #ifndef TONEMAP_H
 #define TONEMAP_H
-#define NL_TINT_HIGH vec3(1.2, 0.8, 0.6)
-#define NL_SATURATION 0.9
 
 vec3 colorCorrection(vec3 col) {
   #ifdef NL_EXPOSURE
