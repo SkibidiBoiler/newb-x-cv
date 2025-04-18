@@ -39,7 +39,7 @@ vec3 colorCorrection(vec3 col) {
     col *= mix(NL_TINT_LOW, NL_TINT_HIGH, col);
   #endif
 
-  uniform float isGround;
+  float isGround;
 
 vec3 tonemap(vec3 col) {
     const float a = 1.04;
