@@ -219,6 +219,6 @@ def run(args):
     if not args.no_zip:
         pack_archive = os.path.join('build', pack_acr_name + ('.zip' if is_ios else '.mcpack'))
         console.print("\n~ [bold]Archive pack\n ", pack_archive)
-        shutil.make_archive(pack_dir, 'zip', pack_dir)
+        shutil.make_archive(pack_dir, 'mcpack', pack_dir)
         if not is_ios:
-            os.rename(pack_dir + '.zip', pack_archive)
+            os.rename(pack_dir + '.mcpack', pack_archive)
