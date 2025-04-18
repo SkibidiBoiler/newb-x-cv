@@ -1,5 +1,7 @@
 #ifndef TONEMAP_H
 #define TONEMAP_H
+#define NL_TINT_HIGH vec3(1.2, 0.8, 0.6)
+#define NL_SATURATION 0.9
 
 vec3 colorCorrection(vec3 col) {
   #ifdef NL_EXPOSURE
@@ -39,6 +41,8 @@ vec3 colorCorrection(vec3 col) {
     col *= mix(NL_TINT_LOW, NL_TINT_HIGH, col);
   #endif
 
+  float isGround = step(0.5, col.r) * step(0.2, col.g);  // Detecta colores tierra
+col = mix(col, mix(vec3(dot(col, vec3(0.3, 0.6, 0.1))), col, 0.8), isGround);
   return col;
 }
 
