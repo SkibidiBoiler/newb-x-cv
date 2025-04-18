@@ -42,8 +42,8 @@ vec3 colorCorrection(vec3 col) {
   col = pow(col, vec3_splat(1.0/1.1));
   col = mix(vec3_splat(dot(col, vec3(0.21, 0.71, 0.08))), col, 0.9);
   col *= mix(vec3(0.95, 0.9, 0.8), vec3(1.2, 0.8, 0.6), col);
-  float isGround = step(0.5, col.r) * step(0.2, col.g);
-  col = mix(col, mix(vec3(dot(col, vec3(0.3, 0.6, 0.1))), col, 0.8), isGround);
+  float scalar = dot(col, vec3(0.3, 0.6, 0.1));
+  col = mix(col, mix(vec3(scalar, scalar, scalar), col, 0.8), isGround);
   
   return col;
 }
