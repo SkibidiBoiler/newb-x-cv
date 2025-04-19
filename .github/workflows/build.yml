@@ -67,19 +67,16 @@ jobs:
           ${{ github.workspace }}/tool/data
     - run: pip install -r requirements.txt
     - run: |
-        set -e
-        echo "Running build setup..."
         ./build.sh setup
-        echo "Running build pack..."
-        ./build.sh pack -p android -v ${{ inputs.subversion }} --no-zip
-        echo "Contents of ./build directory:"
+        ./build.sh pack -p android -v ${{ inputs.subversion }}
+        echo "Checking build directory..."
         ls -R ./build
-        if [ -f ./build/pack-android.mcpack ]; then
-        mv ./build/pack-android.mcpack newb-x-android.mcpack
-        elif [ -f ./build/nxcv-0.22-android.mcpack ]; then
-        mv ./build/nxcv-0.22-android.mcpack newb-x-android.mcpack
+        if [ -f ./build/pack-android.zip ]; then
+        mv ./build/pack-android.zip newb-x-android.mcpack
+        elif [ -f ./build/nxcv-android.mcpack ]; then
+        mv ./build/nxcv-android.mcpack newb-x-android.mcpack
         else
-        echo "Error: No .mcpack file found. Ensure build.sh is generating the required files."
+        echo "Error: Expected file not found in ./build"
         exit 1
         fi
     - uses: actions/upload-artifact@v4
