@@ -72,6 +72,13 @@ No wave effects
 '''
 
 [[subpack]]
+define = "OPTIMIZATION"
+materials = ["Clouds", "RenderChunk", "Stars", "Weather", "Actor"]
+description = '''
+Big optimization that deactivates a lot of unnecessary effects
+'''
+
+[[subpack]]
 define = "DEFAULT"
 materials = []
 description = '''
