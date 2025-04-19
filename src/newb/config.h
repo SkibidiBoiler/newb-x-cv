@@ -34,7 +34,7 @@
 #define NL_SATURATION 0.9            // [toggle] 0.0 grayscale ~ 4.0 super saturated
 #define NL_TINT                      // [toggle] enable light/dark tone tinting
 #define NL_TINT_LOW  vec3(0.95,0.9,0.8) // color tint for dark tone
-#define NL_TINT_HIGH vec3(1.2,0.8,0.6) // color tint for light tone
+#define NL_TINT_HIGH vec3(1.2,0.75,0.6) // color tint for light tone
 
 /* Terrain lighting */
 #define NL_SUN_INTENSITY 2.6   // 0.5 weak ~ 5.0 bright
@@ -55,7 +55,7 @@
 #define NL_END_AMBIENT    vec3(1.98,1.25,2.3)
 
 /* Torch colors */
-#define NL_OVERWORLD_TORCH_COL  vec3(1.0,0.25,0.05)
+#define NL_OVERWORLD_TORCH_COL  vec3(1.0,0.2,0.03)
 #define NL_UNDERWATER_TORCH_COL vec3(0.0,0.95,0.18)
 #define NL_NETHER_TORCH_COL     vec3(0.0,0.71,0.12)
 #define NL_END_TORCH_COL        vec3(1.0,0.25,0.0)
@@ -120,7 +120,7 @@
 #define NL_CLOUD0_THICKNESS 2.1      // 0.5 slim ~ 8.0 fat
 #define NL_CLOUD0_RAIN_THICKNESS 4.0 // 0.5 slim ~ 8.0 fat
 #define NL_CLOUD0_OPACITY 0.9        // 0.0 invisible ~ 1.0 opaque
-#define NL_CLOUD0_MULTILAYER         // [toggle] extra cloud layer
+//#define NL_CLOUD0_MULTILAYER         // [toggle] extra cloud layer
 
 /* Soft cloud settings */
 #define NL_CLOUD1_SCALE vec2(0.016, 0.022) // 0.003 large ~ 0.2 tiny
