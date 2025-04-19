@@ -88,7 +88,7 @@
 #define NL_GLOW_TEX 2.3           // 0.4 weak ~ 8.0 bright
 #define NL_GLOW_SHIMMER 0.8       // [toggle] 0.1 subtle ~ 1.0 100% shimmer
 #define NL_GLOW_SHIMMER_SPEED 0.9 // 0.5 slow - 2.0 fast
-//#define NL_GLOW_LEAK 0.6        // [toggle] 0.08 subtle ~ 1.0 100% brightness of NL_GLOW_TEX
+#define NL_GLOW_LEAK 0.5        // [toggle] 0.08 subtle ~ 1.0 100% brightness of NL_GLOW_TEX
 
 /* Waving */
 #define NL_PLANTS_WAVE 0.05    // [toggle] 0.02 gentle ~ 0.4 violent
@@ -163,8 +163,8 @@
 
 /* Shooting star */
 #define NL_SHOOTING_STAR 1.0        // [toggle] 0.2 dim ~ 1.0 bright
-#define NL_SHOOTING_STAR_PERIOD 1.5 // 0.4 fast ~ 12.0 slow (12 secs)
-#define NL_SHOOTING_STAR_DELAY 4.6 // 0.0 no delay ~ 100.0 long time (100 secs)
+#define NL_SHOOTING_STAR_PERIOD 0.9 // 0.4 fast ~ 12.0 slow (12 secs)
+#define NL_SHOOTING_STAR_DELAY 4.1 // 0.0 no delay ~ 100.0 long time (100 secs)
 
 /* Galaxy */
 #define NL_GALAXY_STARS 2.0           // [toggle] 0.1 dim - 4.0 bright
@@ -181,7 +181,7 @@
 #define NL_SUNMOON_RAIN_VISIBILITY 0.5 // 0.0 invisible during rain ~ 1.0 always visible
 
 /* Fake godrays during sunrise/sunset */
-//#define NL_GODRAY 0.3 // [toggle] 0.1 subtle ~ 0.8 strong
+#define NL_GODRAY 0.25 // [toggle] 0.1 subtle ~ 0.8 strong
 
 /* Sky reflection */
 //#define NL_GROUND_REFL 0.4       // [toggle] 0.2 slightly reflective ~ 1.0 fully reflect sky
@@ -190,13 +190,13 @@
 //#define NL_GROUND_AURORA_REFL    // [toggle] aurora reflection on ground
 
 /* Entity (Actor, ItemInHand) */
-#define NL_ENTITY_BRIGHTNESS     0.65 // 0.1 dark ~ 1.6 bright
-#define NL_ENTITY_EDGE_HIGHLIGHT 0.41 // 0.0 no highlight ~ 1.6 bright highlight
+#define NL_ENTITY_BRIGHTNESS     0.6 // 0.1 dark ~ 1.6 bright
+#define NL_ENTITY_EDGE_HIGHLIGHT 0.43 // 0.0 no highlight ~ 1.6 bright highlight
 
 /* Weather particles */
 #define NL_WEATHER_SPECK 0.6         // [toggle] 0.0 vanilla texture ~ 1.0 soft speck
 #define NL_WEATHER_RAIN_SLANT 4.0    // 1.0 minimal ~ 8.0 violent
-#define NL_WEATHER_PARTICLE_SIZE 1.0 // 0.5 tiny ~ 4.0 large
+#define NL_WEATHER_PARTICLE_SIZE 2.0 // 0.5 tiny ~ 4.0 large
 
 /* Lava effects */
 #define NL_LAVA_NOISE            // [toggle] darken lava in certain regions
@@ -241,9 +241,24 @@
   #define NL_CLOUD_TYPE 2
 #endif
 
-#ifdef BOX_CLOUDS
+#ifdef REALISTIC_CLOUDS
+  #undef NL_CLOUD_TYPE
+  #define NL_CLOUD_TYPE 3
+#endif
+
+#ifdef OPTIMIZATION
   #undef NL_CLOUD_TYPE
   #define NL_CLOUD_TYPE 0
+  #undef NL_FOG
+  #undef NL_LANTERN_WAVE
+  #undef NL_WATER_CLOUD_REFLECTION
+  #undef NL_WATER_WAVE
+  #undef NL_RAIN_MIST_OPACITY
+  #undef NL_SHOOTING_STAR
+  #undef NL_GODRAY
+  #undef NL_WEATHER_SPECK
+  #define NL_WEATHER_SPECK 0.2
+  #undef NL_GALAXY_STARS
 #endif
 
 #endif
