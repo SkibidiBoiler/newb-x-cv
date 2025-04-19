@@ -105,8 +105,6 @@ vec3 nlLighting(
 
   // darken at crevices
   light *= COLOR.g > 0.35 ? 1.0 : 0.8;
-  vec3 groundDesaturated = mix(vec3(dot(light, vec3(0.3, 0.6, 0.1))), light, NL_GROUND_SATURATION);
-light = mix(light, groundDesaturated, step(0.1, COLOR.r));
 
   // brighten tree leaves
   if (isTree) {
