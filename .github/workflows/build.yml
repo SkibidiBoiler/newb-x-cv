@@ -67,12 +67,22 @@ jobs:
     - run: pip install -r requirements.txt
     - run: |
         ./build.sh setup
-        ./build.sh pack -p android -v ${{ inputs.subversion }}
-        mv ./build/pack-android.zip ./build/pack-android.mcpack
+        ./build.sh pack -p android -v ${{ github.event.inputs.subversion }}
+        echo "Checking build directory..."
+        ls -R ./build
+        if [ -f ./build/pack-android.zip ]; then
+        mv ./build/pack-android.zip newb-x-android.mcpack
+        elif ls ./build/*.mcpack 1> /dev/null 2>&1; then
+        mcpack_file=$(ls ./build/*.mcpack | head -n 1)
+        mv "$mcpack_file" newb-x-android.mcpack
+        else
+        echo "Error: Expected file not found in ./build"
+        exit 1
+        fi
     - uses: actions/upload-artifact@v4
       with:
         name: newb-x-android
-        path: ./build/pack-android.mcpack
+        path: ./newb-x-android.mcpack
   ios:
     runs-on: ubuntu-latest
     if:  ${{ (github.event.inputs.platform == 'IOS') || (github.event.inputs.platform == 'All') }}
