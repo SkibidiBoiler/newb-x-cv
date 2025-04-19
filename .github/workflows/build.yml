@@ -50,7 +50,6 @@ jobs:
       with:
         name: newb-x-windows.mcpack
         path: ./build/newb-x-windows.mcpack
-
   android:
     runs-on: ubuntu-latest
     if:  ${{ (github.event.inputs.platform == 'Android') || (github.event.inputs.platform == 'All') }}
@@ -68,22 +67,12 @@ jobs:
     - run: pip install -r requirements.txt
     - run: |
         ./build.sh setup
-        ./build.sh pack -p android
-        echo "Checking build directory..."
-        ls -R ./build
-        if [ -f ./build/pack-android.zip ]; then
-        mv ./build/pack-android.zip newb-x-android.mcpack
-        elif [ -f ./build/nxcv-android.mcpack ]; then
-        mv ./build/nxcv-android.mcpack newb-x-android.mcpack
-        else
-        echo "Error: Expected file not found in ./build"
-        exit 1
-        fi
+        ./build.sh pack -p android -v ${{ inputs.subversion }} --no-zip
+        mv ./build/pack-android ./build/pack-android.mcpack
     - uses: actions/upload-artifact@v4
       with:
-        name: newb-x-android.mcpack
-        path: ./newb-x-android.mcpack
-
+        name: newb-x-android
+        path: ./build/pack-android.mcpack
   ios:
     runs-on: ubuntu-latest
     if:  ${{ (github.event.inputs.platform == 'IOS') || (github.event.inputs.platform == 'All') }}
@@ -109,7 +98,6 @@ jobs:
       with:
         name: newb-x-ios.mcpack
         path: ./newb-x-ios.mcpack
-
   merged:
     runs-on: windows-2022
     if:  ${{ (github.event.inputs.platform == 'Merged') || (github.event.inputs.platform == 'All')}}
