@@ -68,7 +68,7 @@ jobs:
     - run: pip install -r requirements.txt
     - run: |
         ./build.sh setup
-        ./build.sh pack -p android -v ${{ inputs.subversion }}
+        ./build.sh pack -p android
         echo "Checking build directory..."
         ls -R ./build
         if [ -f ./build/pack-android.zip ]; then
