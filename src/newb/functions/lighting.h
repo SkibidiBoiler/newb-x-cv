@@ -14,7 +14,7 @@
     #define NL_TORCH_INTENSITY 1.5
 #endif
 #ifndef NL_GROUND_SATURATION
-    #define NL_GROUND_SATURATION 0.4
+    #define NL_GROUND_SATURATION 0.3
 #endif
 
 // sunlight tinting
