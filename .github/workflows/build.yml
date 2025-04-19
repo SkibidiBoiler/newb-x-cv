@@ -48,7 +48,7 @@ jobs:
         }
     - uses: actions/upload-artifact@v4
       with:
-        name: newb-x-cv-windows.mcpack
+        name: newb-x-windows.mcpack
         path: ./build/newb-x-windows.mcpack
 
   android:
@@ -78,7 +78,7 @@ jobs:
         fi
     - uses: actions/upload-artifact@v4
       with:
-        name: newb-x-cv-android.mcpack
+        name: newb-x-android.mcpack
         path: ./newb-x-android.mcpack
 
   ios:
