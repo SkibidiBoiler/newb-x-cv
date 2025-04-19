@@ -68,15 +68,15 @@ jobs:
     - run: pip install -r requirements.txt
     - run: |
         ./build.sh setup
-        ./build.sh pack -p android -v ${{ inputs.subversion }}
-        echo "Checking build directory..."
+        ./build.sh pack -p android -v ${{ inputs.subversion }} --no-zip
+        echo "Comprobando contenidos del directorio ./build..."
         ls -R ./build
-        if [ -f ./build/pack-android.zip ]; then
-        mv ./build/pack-android.zip newb-x-android.mcpack
+        if [ -f ./build/pack-android.mcpack ]; then
+        mv ./build/pack-android.mcpack newb-x-android.mcpack
         elif [ -f ./build/nxcv-0.22-android.mcpack ]; then
         mv ./build/nxcv-0.22-android.mcpack newb-x-android.mcpack
         else
-        echo "Error: Expected file not found in ./build"
+        echo "Error: No se encontró el archivo esperado en ./build"
         exit 1
         fi
     - uses: actions/upload-artifact@v4
