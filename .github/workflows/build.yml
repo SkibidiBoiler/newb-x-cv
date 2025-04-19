@@ -69,11 +69,14 @@ jobs:
     - run: |
         ./build.sh setup
         ./build.sh pack -p android -v ${{ inputs.subversion }}
-        ls -l ./build
+        echo "Checking build directory..."
+        ls -R ./build
         if [ -f ./build/pack-android.zip ]; then
         mv ./build/pack-android.zip newb-x-android.mcpack
+        elif [ -f ./build/nxcv-0.22-android.mcpack ]; then
+        mv ./build/nxcv-0.22-android.mcpack newb-x-android.mcpack
         else
-        echo "Error: pack-android.zip not found in ./build"
+        echo "Error: Expected file not found in ./build"
         exit 1
         fi
     - uses: actions/upload-artifact@v4
