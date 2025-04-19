@@ -48,7 +48,7 @@ jobs:
         }
     - uses: actions/upload-artifact@v4
       with:
-        name: newb-x-windows.mcpack
+        name: newb-x-windows
         path: ./build/newb-x-windows.mcpack
   android:
     runs-on: ubuntu-latest
@@ -106,7 +106,7 @@ jobs:
         mv ./build/pack-ios.zip newb-x-ios.mcpack
     - uses: actions/upload-artifact@v4
       with:
-        name: newb-x-ios.mcpack
+        name: newb-x-ios
         path: ./newb-x-ios.mcpack
   merged:
     runs-on: windows-2022
@@ -136,5 +136,5 @@ jobs:
         }
     - uses: actions/upload-artifact@v4
       with:
-        name: newb-x-merged.mcpack
+        name: newb-x-merged
         path: ./build/newb-x-merged.mcpack
