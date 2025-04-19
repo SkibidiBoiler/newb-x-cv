@@ -39,29 +39,6 @@ vec3 colorCorrection(vec3 col) {
     col *= mix(NL_TINT_LOW, NL_TINT_HIGH, col);
   #endif
 
-  return col;
-}
-
-float3 tonemap(float3 col, float isGround) {
-    const float a = 1.04;
-    const float b = 0.03;
-    const float c = 0.93;
-    const float d = 0.56;
-    const float e = 0.14;
-
-    col *= 0.85;
-    col = clamp((col * (a * col + b)) / (col * (c * col + d) + e), 0.0, 1.0);
-
-    col = pow(col, 1.0 / 1.1);
-    col = mix(float3(dot(col, float3(0.21, 0.71, 0.08))), col, 0.9);
-    col *= mix(float3(0.95, 0.9, 0.8), float3(1.2, 0.8, 0.6), col);
-    col = pow(col, 1.0 / 1.1);
-    col = mix(float3(dot(col, float3(0.21, 0.71, 0.08))), col, 0.9);
-    col *= mix(float3(0.95, 0.9, 0.8), float3(1.2, 0.8, 0.6), col);
-
-    float scalar = dot(col, float3(0.3, 0.6, 0.1));
-    col = mix(col, mix(float3(scalar), col, 0.8), saturate(isGround));
-
     return col;
 }
 
