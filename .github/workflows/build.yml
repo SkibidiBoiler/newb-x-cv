@@ -128,7 +128,13 @@ jobs:
     - run: |
         .\build.bat setup
         .\build.bat pack -p merged -v ${{ inputs.subversion }}
+        echo "Debug: Checking for pack-merged.zip"
+        if (Test-Path -Path ./build/pack-merged.zip) {
         Rename-Item -Path ./build/pack-merged.zip -NewName newb-x-merged.mcpack
+        } else {
+        Write-Error "Error: pack-merged.zip not found in ./build"
+        exit 1
+        }
     - uses: actions/upload-artifact@v4
       with:
         name: newb-x-merged.mcpack
