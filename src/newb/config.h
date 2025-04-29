@@ -260,4 +260,9 @@
   #undef NL_GALAXY_STARS
 #endif
 
+#ifdef REFLECTIONS
+  #define NL_GROUND_AURORA_REFL
+  #define NL_GROUND_REFL 0.6
+#endif
+
 #endif
