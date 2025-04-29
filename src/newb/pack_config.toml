@@ -72,6 +72,13 @@ No wave effects
 '''
 
 [[subpack]]
+define = "REFLECTIONS"
+materials = ["RenderChunk", "Actor", "Weather", "Sky", "ActorGlint"]
+description = '''
+Turns on all reflections
+'''
+
+[[subpack]]
 define = "OPTIMIZATION"
 materials = ["Clouds", "RenderChunk", "Stars", "Weather", "Actor"]
 description = '''
