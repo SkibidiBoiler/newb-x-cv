@@ -263,6 +263,7 @@
 #ifdef REFLECTIONS
   #define NL_GROUND_AURORA_REFL
   #define NL_GROUND_REFL 0.6
+  #define NL_WATER_REFL_MASK
 #endif
 
 #endif
