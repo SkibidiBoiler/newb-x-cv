@@ -256,7 +256,6 @@
   #undef NL_RAIN_MIST_OPACITY
   #undef NL_SHOOTING_STAR
   #undef NL_WEATHER_SPECK
-  #define NL_WEATHER_SPECK 0.2
   #undef NL_GALAXY_STARS
   #undef NL_UNDERWATER_STREAKS
 #endif
