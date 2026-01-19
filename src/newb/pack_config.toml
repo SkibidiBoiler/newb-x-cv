@@ -1,9 +1,9 @@
-name = "Newb X Legacy"
-version = [0, 16, 0]
+name = "Newb X Calm Vibes"
+version = [5, 0, 0]
 min_supported_mc_version = [1, 21, 111]
 description = '''
 §c%w
-§7- An enchanced vanilla shader for Minecraft!
+§7- Shader specialized to bring an immersive experience and relaxing vibes to your survival.
 %v
 §3https://devendrn.github.io/newb-shader/
 ''' # %w = patch warning, %v = version
@@ -70,12 +70,19 @@ description = '''
 No wave effects
 '''
 
-#[[subpack]]
-#define = "LITE"
-#materials = ["Sky", "RenderChunk", "Actor", "ActorGlint", "EndSky", "Clouds", "SunMoon", "Weather", "ItemInHandTextured", "ItemInHandColor", "ItemInHandColorGlint", "Stars"]
-#description = '''
-#Many effects disabled. A bit lighter!
-#'''
+[[subpack]]
+define = "REFLECTIONS"
+materials = ["RenderChunk", "Actor", "Weather", "Sky", "ActorGlint"]
+description = '''
+Turns on all reflections
+'''
+
+[[subpack]]
+define = "LITE"
+materials = ["Sky", "RenderChunk", "Actor", "ActorGlint", "EndSky", "Clouds", "SunMoon", "Weather", "ItemInHandTextured", "ItemInHandColor", "ItemInHandColorGlint", "Stars"]
+description = '''
+Many effects disabled. A bit lighter!
+'''
 
 [[subpack]]
 define = "DEFAULT"
