@@ -1,0 +1,1416 @@
+From c06a1ee833bccef91bce8ba26d53be9d48a9b563 Mon Sep 17 00:00:00 2001
+From: BOTW perf <noreply@anthropic.com>
+Date: Wed, 11 Nov 2026 23:51:19 +0000
+Subject: [PATCH 1/7] Android: render thread off little cores on 7-series SoCs;
+ experimental draw distance
+
+- plat_render_thread_pin: on by default wherever the CPU has little cores (capacity under half the
+  strongest), pinned to every big core, not only the single fastest one (Snapdragon 778G: 1+3 x A78).
+- draw_distance (ini) / LARECOMP_FAR: the main camera's far plane brought nearer on 1.8.2 / 1.9.0, so
+  the game's culling drops what lies past it.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01EvHfzrxmgqUumCfN8U5uyT
+---
+ runtime/hle/widescreen.c   | 23 ++++++++++++++
+ runtime/platform/android.c | 61 ++++++++++++++++++++++++++++----------
+ runtime/settings.c         |  4 ++-
+ runtime/settings.h         |  3 ++
+ 4 files changed, 75 insertions(+), 16 deletions(-)
+
+diff --git a/runtime/hle/widescreen.c b/runtime/hle/widescreen.c
+index 1b5439f..48bd474 100644
+--- a/runtime/hle/widescreen.c
++++ b/runtime/hle/widescreen.c
+@@ -17,6 +17,7 @@
+ #include <stdbool.h>
+ #include <stdint.h>
+ 
++#include <stdlib.h>
+ #include <string.h>
+ 
+ #include "../framepace.h"
+@@ -73,8 +74,30 @@ uint32_t rt_aspect_bits(int site) {
+ static volatile bool g_widened;  // (rt_persp_update has widened a camera)
+ static bool is_16_9(float a) { return a > 1.7767f && a < 1.7789f; }
+ RT_ON_RESET(widescreen_reset) { g_boot_aspect = -1, g_hooked = false, g_widened = false; }  // (Return to start: a new boot)
++// Draw distance (Settings.draw_distance / LARECOMP_FAR=<metres>): the main camera's far plane (25000, the one
++// projection that far: the others are the shadows', the HUD's, the UI's) brought nearer before its matrix is built,
++// so the game's own frustum culling drops what lies past it. The game keeps the field, so it is set once and stays;
++// a later reset to 25000 is caught again here. Experimental: the horizon ends at that distance (the fog hides some
++// of it); terrain and actors nearer keep their own level of detail.
++static void persp_far(uint64_t proj) {
++    static int env = -1;
++    if (env < 0) {
++        const char *e = getenv("LARECOMP_FAR");
++        env = e && atoi(e) > 0 ? atoi(e) : 0;
++    }
++    int want = env ? env : g_settings.draw_distance;
++    if (want <= 0) return;
++    if (want < 1000) want = 1000;  // (nearer, the world's own map tiles vanish in front of Link)
++    float *far = (float *)(uintptr_t)(proj + 0x9C);
++    if (*far < 20000.0f || *far <= (float)want) return;
++    static int n;
++    if (n++ < 4) LOG("[drawdist] projection %llx: far %.0f -> %d\n", (unsigned long long)proj, *far, want);
++    *far = (float)want;
++}
++
+ void rt_persp_update(uint64_t proj) {
+     g_hooked = true;
++    if (proj) persp_far(proj);
+     if (!proj || !widescreen_allowed() || g_shape <= 1.001f) return;
+     float *aspect = (float *)(uintptr_t)(proj + 0xB0);
+     if (ENV("LARECOMP_LOG_ASPECT")) {  // (each projection rebuilt, once: near, far, fovy, aspect)
+diff --git a/runtime/platform/android.c b/runtime/platform/android.c
+index 6337ade..f373a4c 100644
+--- a/runtime/platform/android.c
++++ b/runtime/platform/android.c
+@@ -872,37 +872,68 @@ static void uclamp_min_thread(void) {
+         LOG("[android] uclamp.min %d for the game's threads: %s\n", want, r ? strerror(errno) : "ok");
+ }
+ 
+-// The render thread (vulkan/async.c, ours: no part of the game's job system that LARECOMP_PIN broke) on the fastest
++// The render thread (vulkan/async.c, ours: no part of the game's job system that LARECOMP_PIN broke) off the little
+ // cores. Left to the scheduler on a Galaxy Tab A9+ (Snapdragon 695: 2 x A78, 6 x A55) it sat on a little core,
+-// 90 ms a frame translating the world, while the game's thread had a big one (2026-11-08). Default: on low RAM
+-// (vulkan/exec.c vk_low_ram - the weak phones); LARECOMP_RENDER_BIG=1 / 0.
++// 90 ms a frame translating the world, while the game's thread had a big one (2026-11-08). The same layout on the
++// Snapdragon 778G / 7-series (1 + 3 x A78, 4 x A55): a phone with 8 GB is no "low RAM" device, so the pin stayed off.
++// Default: on low RAM (vulkan/exec.c vk_low_ram) or wherever the CPU has little cores - a core whose capacity
++// (/sys/.../cpu_capacity, else its top clock) is under half the strongest's; the Snapdragon 8 Elite's middle cores are
++// ~80% of its prime ones, so nothing changes there. The set: every core of at least half the strongest's capacity
++// (the A78s, not only the one prime). LARECOMP_RENDER_BIG=1 / 0 forces it on / off.
++static long cpu_strength(int c) {
++    char path[96];
++    long v = 0;
++    snprintf(path, sizeof path, "/sys/devices/system/cpu/cpu%d/cpu_capacity", c);
++    FILE *f = fopen(path, "re");
++    if (f) {
++        if (fscanf(f, "%ld", &v) != 1) v = 0;
++        fclose(f);
++    }
++    if (v > 0) return v;
++    snprintf(path, sizeof path, "/sys/devices/system/cpu/cpu%d/cpufreq/cpuinfo_max_freq", c);
++    f = fopen(path, "re");
++    if (!f) return 0;
++    if (fscanf(f, "%ld", &v) != 1) v = 0;
++    fclose(f);
++    return v;
++}
++
+ void plat_render_thread_pin(void) {
+     const char *e = getenv("LARECOMP_RENDER_BIG");
+-    extern bool vk_low_ram(void);
+-    if (e ? !atoi(e) : !vk_low_ram()) return;
+-    long best = 0, mhz[64] = {0};
++    if (e && !atoi(e)) return;
++    long best = 0, weakest = 0, cap[64] = {0};
+     int n = 0;
+     for (int c = 0; c < 64; c++) {
+-        char path[96];
+-        snprintf(path, sizeof path, "/sys/devices/system/cpu/cpu%d/cpufreq/cpuinfo_max_freq", c);
+-        FILE *f = fopen(path, "re");
+-        if (!f) continue;
+-        if (fscanf(f, "%ld", &mhz[c]) != 1) mhz[c] = 0;
+-        fclose(f);
+-        if (mhz[c] > best) best = mhz[c];
++        cap[c] = cpu_strength(c);
++        if (!cap[c]) continue;
++        if (cap[c] > best) best = cap[c];
++        if (!weakest || cap[c] < weakest) weakest = cap[c];
+         n = c + 1;
+     }
++    extern bool vk_low_ram(void);
++    bool little = best && weakest * 2 < best;
++    if (!e && !vk_low_ram() && !little) return;
+     cpu_set_t set;
+     CPU_ZERO(&set);
+     int k = 0;
+     for (int c = 0; c < n; c++)
+-        if (mhz[c] == best) {
++        if (cap[c] && cap[c] * 2 >= best) {
+             CPU_SET(c, &set);
+             k++;
+         }
++    if (e && k == n && weakest < best) {  // (forced, no core under half: e.g. only top clocks to go by, the 778G's
++        CPU_ZERO(&set);                    //  A55s at 1.9 GHz against 2.4 - every core but the slowest cluster)
++        k = 0;
++        for (int c = 0; c < n; c++)
++            if (cap[c] > weakest) {
++                CPU_SET(c, &set);
++                k++;
++            }
++    }
+     if (!best || k == 0 || k == n) return;
+     int r = sched_setaffinity(0, sizeof set, &set);
+-    LOG("[android] render thread on the %d fastest cores (%ld MHz): %s\n", k, best / 1000, r ? strerror(errno) : "ok");
++    LOG("[android] render thread on the %d big cores (capacity >= %ld of %ld%s): %s\n", k, (best + 1) / 2, best,
++        little ? ", little cores present" : "", r ? strerror(errno) : "ok");
+ }
+ 
+ void plat_thread_unpin(void) {
+diff --git a/runtime/settings.c b/runtime/settings.c
+index 5cdcdbb..aebad53 100644
+--- a/runtime/settings.c
++++ b/runtime/settings.c
+@@ -249,7 +249,8 @@ void settings_load(void) {
+         char val[128] = "";
+         if (sscanf(line, " %63[^= ] = %127[^\r\n]", key, val) < 1) continue; val[strcspn(val, "\r\n")] = 0;
+ #endif
+-        if (!strcmp(key, "aspect")) g_settings.aspect = !strcmp(val, "original") ? ASPECT_ORIGINAL : ASPECT_UNLOCKED;
++        if (!strcmp(key, "draw_distance")) g_settings.draw_distance = atoi(val) > 0 ? atoi(val) : 0;
++        else if (!strcmp(key, "aspect")) g_settings.aspect = !strcmp(val, "original") ? ASPECT_ORIGINAL : ASPECT_UNLOCKED;
+         else if (!strcmp(key, "fullscreen")) g_settings.fullscreen = atoi(val) != 0;
+         else if (!strcmp(key, "volume")) g_settings.volume = (float)atof(val);
+         else if (!strcmp(key, "reverb")) g_settings.reverb = atoi(val) != 0;
+@@ -414,6 +415,7 @@ void settings_save(void) {
+     else fprintf(f, "resolution = match\n");
+     fprintf(f, "language = %s\n", g_language_codes[g_settings.language > LANG_AUTO && g_settings.language < N_LANGUAGES
+                                                      ? g_settings.language : LANG_AUTO]);
++    fprintf(f, "draw_distance = %d\n", g_settings.draw_distance);
+     fprintf(f, "aspect_asked = %d\n", g_settings.aspect_asked);
+     fprintf(f, "menu_tip_seen = %d\n", g_settings.menu_tip_seen);
+     fprintf(f, "mods_off = %s\n", g_settings.mods_off);
+diff --git a/runtime/settings.h b/runtime/settings.h
+index 1094345..a2832e4 100644
+--- a/runtime/settings.h
++++ b/runtime/settings.h
+@@ -81,6 +81,9 @@ typedef struct {
+     float stick_deadzone;  // a controller's sticks: a round dead zone (share of the travel, 0-0.4), rescaled past it
+                            // (hle/input.c): worn sticks that drift. 0: the game's own only
+ #endif
++    int draw_distance;   // the main camera's far plane in metres (0: the game's own, 25000): smaller cuts what lies
++                         // beyond it - fewer draws for the GPU and the render thread, a shorter horizon (1.8.2 / 1.9.0:
++                         // hle/widescreen.c rt_persp_update; experimental, for weak phones). LARECOMP_FAR=<m> wins
+     int language;        // LANG_AUTO or an index into g_language_codes: the game's text language
+     bool aspect_asked;   // the start screen's one-time "authentic 16:9 or unlocked?" question was answered
+     bool menu_tip_seen;  // the start screen's one-time "how to open the menu" note was shown (first PLAY ever)
+-- 
+2.43.0
+
+
+From d4f6a8ef402688c870e1a48155b2a33ce02b673d Mon Sep 17 00:00:00 2001
+From: BOTW perf <noreply@anthropic.com>
+Date: Wed, 11 Nov 2026 23:58:36 +0000
+Subject: [PATCH 2/7] Android: Lite build (-Plite) with mid-range defaults
+
+A separate app (com.botwrecomp.android.lite, "BOTW Lite") for Snapdragon 7-series / Adreno 6xx-7xx phones:
+16:9, draw distance 8000, Turnip fast paths on, native game code, 20 fps, 50% scene, 720-line output,
+bilinear, render thread on the big cores and a uclamp.min floor of 400.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01EvHfzrxmgqUumCfN8U5uyT
+---
+ .../botwrecompandroid/app/build.gradle.kts    | 10 ++++++
+ .../app/src/main/AndroidManifest.xml          |  2 +-
+ .../app/src/main/cpp/CMakeLists.txt           |  3 ++
+ runtime/platform/android.c                    |  8 +++++
+ runtime/settings.c                            | 31 +++++++++++++------
+ 5 files changed, 44 insertions(+), 10 deletions(-)
+
+diff --git a/android/botwrecompandroid/app/build.gradle.kts b/android/botwrecompandroid/app/build.gradle.kts
+index e81166b..0a364c1 100644
+--- a/android/botwrecompandroid/app/build.gradle.kts
++++ b/android/botwrecompandroid/app/build.gradle.kts
+@@ -10,6 +10,10 @@ val deps: File = repo.resolve("android/deps/out")  // android/deps/build_deps.sh
+ val gen = layout.buildDirectory.dir("generated/botwrecompandroid")
+ // The release key: outside the repository, in ~/.botwrecompandroid/keystore.properties (storeFile, storePassword, keyAlias,
+ // keyPassword); without it, release builds are signed with the debug key
++// The Lite build (./gradlew assembleDebug -Plite): its own app beside the normal one (com.botwrecomp.android.lite, its
++// own settings and game setup), with defaults for mid-range phones - Snapdragon 7-series / Adreno 6xx-7xx, e.g. the
++// POCO X5 Pro (778G): runtime/settings.c and platform/android.c under BOTW_LITE
++val lite: Boolean = (findProperty("lite") as String?)?.let { it != "false" && it != "0" } ?: false
+ val releaseKey: File = File(System.getProperty("user.home"), ".botwrecompandroid/keystore.properties")
+ 
+ android {
+@@ -26,8 +30,14 @@ android {
+         ndk {
+             abiFilters += "arm64-v8a"
+         }
++        manifestPlaceholders["appLabel"] = if (lite) "BOTW Lite" else "BOTWRecompAndroid"
++        if (lite) {
++            applicationIdSuffix = ".lite"
++            versionNameSuffix = "-lite"
++        }
+         externalNativeBuild {
+             cmake {
++                if (lite) arguments += "-DBOTW_LITE=ON"
+                 arguments += "-DBOTW_GEN_DIR=${gen.get().asFile.resolve("inc").absolutePath.replace('\\', '/')}"
+             }
+         }
+diff --git a/android/botwrecompandroid/app/src/main/AndroidManifest.xml b/android/botwrecompandroid/app/src/main/AndroidManifest.xml
+index 0cb1acc..bc6560a 100644
+--- a/android/botwrecompandroid/app/src/main/AndroidManifest.xml
++++ b/android/botwrecompandroid/app/src/main/AndroidManifest.xml
+@@ -22,7 +22,7 @@
+     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" tools:ignore="ScopedStorage" />
+ 
+     <application
+-        android:label="BOTWRecompAndroid"
++        android:label="${appLabel}"
+         android:icon="@mipmap/ic_launcher"
+         android:appCategory="game"
+         android:isGame="true"
+diff --git a/android/botwrecompandroid/app/src/main/cpp/CMakeLists.txt b/android/botwrecompandroid/app/src/main/cpp/CMakeLists.txt
+index 4577fef..4ac1f93 100644
+--- a/android/botwrecompandroid/app/src/main/cpp/CMakeLists.txt
++++ b/android/botwrecompandroid/app/src/main/cpp/CMakeLists.txt
+@@ -60,6 +60,9 @@ target_include_directories(main PRIVATE ${R}/runtime ${R}/runtime/nvn ${IMGUI} $
+ target_compile_definitions(main PRIVATE
+     VK_NO_PROTOTYPES VK_USE_PLATFORM_ANDROID_KHR IMGUI_IMPL_VULKAN_USE_VOLK   # Vulkan from the loaded driver (volk)
+     VMA_STATIC_VULKAN_FUNCTIONS=0 VMA_DYNAMIC_VULKAN_FUNCTIONS=1)
++if(BOTW_LITE)  # (build.gradle.kts -Plite: the mid-range defaults, runtime/settings.c)
++    target_compile_definitions(main PRIVATE BOTW_LITE)
++endif()
+ if(HAVE_FFMPEG)
+     target_link_libraries(main PRIVATE avcodec avformat avutil swscale)
+ else()
+diff --git a/runtime/platform/android.c b/runtime/platform/android.c
+index f373a4c..61dd9b4 100644
+--- a/runtime/platform/android.c
++++ b/runtime/platform/android.c
+@@ -854,6 +854,11 @@ static void uclamp_min_thread(void) {
+     static int want = -1;
+     if (want < 0) {
+         const char *e = getenv("LARECOMP_UCLAMP_MIN");
++#ifdef BOTW_LITE
++        // (the Lite build: a floor of ~40% of each core's top clock, so a 20 fps frame - busy, then idle - doesn't
++        // let MIUI's governor settle the clocks low, issue #41's spiral; LARECOMP_UCLAMP_MIN=0 turns it off)
++        if (!e) e = "400";
++#endif
+         want = e && atoi(e) > 0 ? (atoi(e) > 1024 ? 1024 : atoi(e)) : 0;
+     }
+     if (!want) return;
+@@ -900,6 +905,9 @@ static long cpu_strength(int c) {
+ 
+ void plat_render_thread_pin(void) {
+     const char *e = getenv("LARECOMP_RENDER_BIG");
++#ifdef BOTW_LITE
++    if (!e) e = "1";  // (the Lite build: always off the little cores)
++#endif
+     if (e && !atoi(e)) return;
+     long best = 0, weakest = 0, cap[64] = {0};
+     int n = 0;
+diff --git a/runtime/settings.c b/runtime/settings.c
+index aebad53..694001d 100644
+--- a/runtime/settings.c
++++ b/runtime/settings.c
+@@ -28,8 +28,20 @@ const char *settings_file(void) {
+     return "botwrecompandroid.ini";
+ }
+ 
++#ifdef BOTW_LITE
++// The Lite build (android/botwrecompandroid/app/build.gradle.kts -Plite): defaults for a Snapdragon 7-series phone
++// (POCO X5 Pro, 778G / Adreno 642L, Turnip). The cost there is per draw and per frame, not per pixel
++// (docs/DESEMPENHO-60FPS-2026-10-23.md), so: fewer draws (16:9, a nearer far plane), the fast Turnip paths that
++// Automatic keeps to the Adreno 8xx (copies: 35 -> 15 fps), the game's own code on the CPU, a steady 20 fps, and the
++// cheapest scene and image passes. Every one stays a menu / ini setting.
++#define LITE(normal, lite) lite
++#else
++#define LITE(normal, lite) normal
++#endif
+ Settings g_settings = {
+-    .aspect = ASPECT_UNLOCKED,
++    .aspect = LITE(ASPECT_UNLOCKED, ASPECT_ORIGINAL),
++    .aspect_asked = LITE(false, true),  // (Lite: 16:9 without the start screen's question)
++    .draw_distance = LITE(0, 8000),
+     .fullscreen = false,
+     .volume = 1.0f,
+     .reverb = true,
+@@ -51,21 +63,21 @@ Settings g_settings = {
+     .touch_aim_sens = 1.0f,
+     .touch_talk = true,
+     .touch_minimap_top = true,
+-    .gpu_heap = -1,
+-    .inplace_reads = -1,
+-    .turnip_lrz = -1,
++    .gpu_heap = LITE(-1, 1),
++    .inplace_reads = LITE(-1, 1),
++    .turnip_lrz = LITE(-1, 1),
+     .event_fps_unlock = false,  // (some events count frames: hle/framepace.c in_event)
+-    .fps_mode = 1,  // (30: the game's own choice dropped the overworld to 20, where the GPU's clocks settled low)
+-    .res_mode = 1,  // (1x: the Switch's 900p scene, the HUD at the screen's resolution - Match display drew the scene at
++    .fps_mode = LITE(1, 3),  // (Lite: 20) (30: the game's own choice dropped the overworld to 20, where the GPU's clocks settled low)
++    .res_mode = LITE(1, RES_Q50),  // (Lite: half the display) (1x: the Switch's 900p scene, the HUD at the screen's resolution - Match display drew the scene at
+                     // 2560x1440 on the POCO F7 Ultra: 22 fps)
+ #else
+     .show_fps = false,
+ #endif
+ #ifdef __ANDROID__
+-    .upscaler = UPSCALE_SGSR1,  // (one pass: ~1 ms on the Adreno 830 to 2560x1440, FSR 1's two ~2.7 ms; 40 fps against 38)
+-    .native_code = false,       // (an experiment: runtime/native.c)
++    .upscaler = LITE(UPSCALE_SGSR1, UPSCALE_BILINEAR),  // (one pass: ~1 ms on the Adreno 830 to 2560x1440, FSR 1's two ~2.7 ms; 40 fps against 38)
++    .native_code = LITE(false, true),  // (an experiment: runtime/native.c)
+     .sync_lag = true,           // (a few more fps; the CPU's reads of GPU results a frame old: nvn/objects.c nvnSyncWait)
+-    .out_lines = OUT_AUTO,      // (POCO F7 Ultra, 3200x1440, 1.8.2's Great Plateau: GPU 22.8 ms a frame at the screen's,
++    .out_lines = LITE(OUT_AUTO, 720),  // (POCO F7 Ultra, 3200x1440, 1.8.2's Great Plateau: GPU 22.8 ms a frame at the screen's,
+                                 // 18.6 at 1080 lines with a larger scene - the final image's passes over 2.2x the pixels)
+ #else
+     .upscaler = UPSCALE_SHARP,  // (MetalFX on macOS, AMD FSR 1 on Windows)
+@@ -208,6 +220,7 @@ void settings_reset_defaults(void) {
+     g_settings.upscaler = d->upscaler;
+     g_settings.out_lines = d->out_lines;
+     g_settings.antialias = d->antialias;
++    g_settings.draw_distance = d->draw_distance;
+     g_settings.volume = d->volume;
+     g_settings.reverb = d->reverb;
+     g_settings.movie_audio = d->movie_audio;
+-- 
+2.43.0
+
+
+From 52416ba3d642e34f67f702ec931310efe51df13a Mon Sep 17 00:00:00 2001
+From: BOTW perf <noreply@anthropic.com>
+Date: Thu, 12 Nov 2026 00:01:08 +0000
+Subject: [PATCH 3/7] Android: the game's threads on the big cores
+ (LARECOMP_GAME_BIG, on in Lite)
+
+Core 0 runs one thread at a time (the main thread and its job workers take turns), so any of them on a
+little core holds the frame up. Every game thread now goes to the same big-core set, keeping their speeds
+alike (unlike LARECOMP_PIN). The render pin shares the big-core selection.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01EvHfzrxmgqUumCfN8U5uyT
+---
+ runtime/kernel.c           |  1 +
+ runtime/platform.h         |  1 +
+ runtime/platform/android.c | 83 +++++++++++++++++++++++++++-----------
+ 3 files changed, 61 insertions(+), 24 deletions(-)
+
+diff --git a/runtime/kernel.c b/runtime/kernel.c
+index 55da188..76c40e1 100644
+--- a/runtime/kernel.c
++++ b/runtime/kernel.c
+@@ -369,6 +369,7 @@ static void *thread_main(void *arg) {
+     t_cur = t;
+ #ifdef __ANDROID__
+     plat_thread_unpin();  // (not the presenting thread's fast cores: platform.h)
++    plat_game_thread_big();  // (LARECOMP_GAME_BIG / the Lite build: the game's threads off the little cores)
+ #endif
+     crash_handler_install();
+     rt_set_fpcr(0);
+diff --git a/runtime/platform.h b/runtime/platform.h
+index ee9a9c4..5a1db26 100644
+--- a/runtime/platform.h
++++ b/runtime/platform.h
+@@ -109,6 +109,7 @@ void plat_adpf_stats(PlatAdpfStats *out);
+ // A new thread back on every core: threads inherit the creating thread's affinity, and the presenting thread is
+ // pinned to the fastest cores (platform/android.c)
+ void plat_thread_unpin(void);
++void plat_game_thread_big(void);  // (Android: LARECOMP_GAME_BIG, the game's threads on the big cores)
+ #endif
+ #endif
+ 
+diff --git a/runtime/platform/android.c b/runtime/platform/android.c
+index 61dd9b4..9116d88 100644
+--- a/runtime/platform/android.c
++++ b/runtime/platform/android.c
+@@ -903,12 +903,10 @@ static long cpu_strength(int c) {
+     return v;
+ }
+ 
+-void plat_render_thread_pin(void) {
+-    const char *e = getenv("LARECOMP_RENDER_BIG");
+-#ifdef BOTW_LITE
+-    if (!e) e = "1";  // (the Lite build: always off the little cores)
+-#endif
+-    if (e && !atoi(e)) return;
++// The cores of at least half the strongest's capacity (forced and nothing under half: every core but the slowest
++// cluster - only top clocks to go by, the 778G's A55s at 1.9 GHz against 2.4). Returns how many, 0 when there's
++// nothing to pick (one cluster) or, unforced, no little cores. *little: the CPU has them.
++static int big_core_set(cpu_set_t *set, bool forced, bool *little_out) {
+     long best = 0, weakest = 0, cap[64] = {0};
+     int n = 0;
+     for (int c = 0; c < 64; c++) {
+@@ -918,30 +916,64 @@ void plat_render_thread_pin(void) {
+         if (!weakest || cap[c] < weakest) weakest = cap[c];
+         n = c + 1;
+     }
+-    extern bool vk_low_ram(void);
+     bool little = best && weakest * 2 < best;
+-    if (!e && !vk_low_ram() && !little) return;
+-    cpu_set_t set;
+-    CPU_ZERO(&set);
++    if (little_out) *little_out = little;
++    if (!best || (!forced && !little)) return 0;
++    CPU_ZERO(set);
+     int k = 0;
+     for (int c = 0; c < n; c++)
+-        if (cap[c] && cap[c] * 2 >= best) {
+-            CPU_SET(c, &set);
+-            k++;
+-        }
+-    if (e && k == n && weakest < best) {  // (forced, no core under half: e.g. only top clocks to go by, the 778G's
+-        CPU_ZERO(&set);                    //  A55s at 1.9 GHz against 2.4 - every core but the slowest cluster)
++        if (cap[c] && cap[c] * 2 >= best) CPU_SET(c, set), k++;
++    if (forced && k == n && weakest < best) {
++        CPU_ZERO(set);
+         k = 0;
+         for (int c = 0; c < n; c++)
+-            if (cap[c] > weakest) {
+-                CPU_SET(c, &set);
+-                k++;
+-            }
++            if (cap[c] > weakest) CPU_SET(c, set), k++;
+     }
+-    if (!best || k == 0 || k == n) return;
++    return k == n ? 0 : k;
++}
++
++void plat_render_thread_pin(void) {
++    const char *e = getenv("LARECOMP_RENDER_BIG");
++#ifdef BOTW_LITE
++    if (!e) e = "1";  // (the Lite build: always off the little cores)
++#endif
++    if (e && !atoi(e)) return;
++    extern bool vk_low_ram(void);
++    cpu_set_t set;
++    bool little = false;
++    int k = big_core_set(&set, e || vk_low_ram(), &little);
++    if (!k) return;
+     int r = sched_setaffinity(0, sizeof set, &set);
+-    LOG("[android] render thread on the %d big cores (capacity >= %ld of %ld%s): %s\n", k, (best + 1) / 2, best,
+-        little ? ", little cores present" : "", r ? strerror(errno) : "ok");
++    LOG("[android] render thread on the %d big cores%s: %s\n", k, little ? " (little cores present)" : "",
++        r ? strerror(errno) : "ok");
++}
++
++// LARECOMP_GAME_BIG=1 (the Lite build's default; 0: off): every one of the game's threads - the main thread, its job
++// workers, the threads of cores 1-3 - on the big cores, all of them alike. The game's core 0 runs one thread at a time
++// (kernel.c core0_acquire): the main thread and its workers take turns, so one of them on an A55 holds the whole
++// frame up, ~2-3x slower than on an A78. Unlike LARECOMP_PIN (the main thread alone on the fastest cores, which
++// crashed the job system: a main thread much faster than its workers), the threads keep the same speeds relative to
++// each other - closer to the Switch, where every core runs at the same clock. Audio and our other threads stay free.
++static bool g_game_big;
++static cpu_set_t g_big_set;
++static pthread_once_t g_game_big_once = PTHREAD_ONCE_INIT;
++static void game_big_init(void) {
++    const char *e = getenv("LARECOMP_GAME_BIG");
++#ifdef BOTW_LITE
++    if (!e) e = "1";
++#endif
++    g_game_big = e && atoi(e) && big_core_set(&g_big_set, true, NULL) > 0;
++    if (e && atoi(e)) LOG("[android] game threads on the big cores: %s\n", g_game_big ? "on" : "no little cores to avoid");
++}
++static bool game_big_on(void) {
++    pthread_once(&g_game_big_once, game_big_init);
++    return g_game_big;
++}
++void plat_game_thread_big(void) {
++    if (!game_big_on()) return;
++    int r = sched_setaffinity(0, sizeof g_big_set, &g_big_set);
++    static atomic_int logged;
++    if (r && !atomic_exchange(&logged, 1)) LOG("[android] game thread on the big cores: %s\n", strerror(errno));
+ }
+ 
+ void plat_thread_unpin(void) {
+@@ -950,7 +982,10 @@ void plat_thread_unpin(void) {
+ }
+ 
+ static void pin_to_fastest_cores(void) {
+-    if (!getenv("LARECOMP_PIN")) return;
++    if (!getenv("LARECOMP_PIN")) {
++        plat_game_thread_big();  // (the presenting thread is the game's main thread: with its workers, LARECOMP_GAME_BIG)
++        return;
++    }
+     long best = 0, mhz[CPU_SETSIZE] = {0};
+     int n = 0;
+     for (int c = 0; c < CPU_SETSIZE && c < 64; c++) {
+-- 
+2.43.0
+
+
+From 2b907d931886d55df48a391d8c8e93a1c3657d2b Mon Sep 17 00:00:00 2001
+From: BOTW perf <noreply@anthropic.com>
+Date: Thu, 12 Nov 2026 00:14:46 +0000
+Subject: [PATCH 4/7] Runtime: sampling profiler of the game's threads on the
+ phone (LARECOMP_SAMPLE)
+
+A CPU-time timer per game thread notes the interrupted pc and lr; between two presented frames the
+samples are mapped to the game's functions (the recompiled library's tables, or the guest address in
+native mode) and written to build/samples.txt, with each thread's top 25 in the log.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01EvHfzrxmgqUumCfN8U5uyT
+---
+ runtime/kernel.c            |   4 +
+ runtime/nvn/vulkan/device.c |   8 ++
+ runtime/sampler.c           | 224 ++++++++++++++++++++++++++++++++++++
+ 3 files changed, 236 insertions(+)
+ create mode 100644 runtime/sampler.c
+
+diff --git a/runtime/kernel.c b/runtime/kernel.c
+index 76c40e1..ee8f60a 100644
+--- a/runtime/kernel.c
++++ b/runtime/kernel.c
+@@ -371,6 +371,10 @@ static void *thread_main(void *arg) {
+     plat_thread_unpin();  // (not the presenting thread's fast cores: platform.h)
+     plat_game_thread_big();  // (LARECOMP_GAME_BIG / the Lite build: the game's threads off the little cores)
+ #endif
++    {
++        extern void sampler_thread_start(uint64_t id);
++        sampler_thread_start(t->id);  // (LARECOMP_SAMPLE: where the game's CPU time goes, sampler.c)
++    }
+     crash_handler_install();
+     rt_set_fpcr(0);
+ #ifdef __ANDROID__
+diff --git a/runtime/nvn/vulkan/device.c b/runtime/nvn/vulkan/device.c
+index a0ae65c..11ee4ad 100644
+--- a/runtime/nvn/vulkan/device.c
++++ b/runtime/nvn/vulkan/device.c
+@@ -1471,6 +1471,10 @@ static void present_game_half(void) {
+     if (slow_ms > 0 && renderer_present_count() > 2600 && (!slow_until || (long)renderer_present_count() < slow_until)) SDL_Delay((Uint32)slow_ms);
+     extern void fnprof_frame(uint64_t frame);
+     fnprof_frame(renderer_present_count());
++    {
++        extern void sampler_frame(uint64_t frame);
++        sampler_frame(renderer_present_count());
++    }
+     extern void reboot_test_frame(uint64_t frame);  // runtime/main.c (LARECOMP_REBOOT_AT)
+     reboot_test_frame(renderer_present_count());
+ }
+@@ -1593,6 +1597,10 @@ void backend_present(NvnTexture *t) {
+     if (slow_ms > 0 && total_frames > 2600 && (!slow_until || (long)total_frames < slow_until)) SDL_Delay((Uint32)slow_ms);
+     extern void fnprof_frame(uint64_t frame);
+     fnprof_frame(total_frames);
++    {
++        extern void sampler_frame(uint64_t frame);
++        sampler_frame(total_frames);
++    }
+     extern void reboot_test_frame(uint64_t frame);  // runtime/main.c (LARECOMP_REBOOT_AT)
+     reboot_test_frame(total_frames);
+ #endif
+diff --git a/runtime/sampler.c b/runtime/sampler.c
+new file mode 100644
+index 0000000..87b0fb5
+--- /dev/null
++++ b/runtime/sampler.c
+@@ -0,0 +1,224 @@
++// Sampling profiler of the game's threads, on the phone itself (no adb, no simpleperf): where their CPU time goes.
++// LARECOMP_SAMPLE=<from>:<to> - presented frames, as LARECOMP_FNPROF. Each game thread (kernel.c thread_main) gets a
++// timer on its own CPU time (asked for every millisecond it runs - the kernel checks CPU timers at its tick, so ~250
++// a second at HZ=250; a thread that waits costs nothing), whose SIGPROF
++// notes the interrupted pc and lr. At frame <to> they are written to build/samples.txt (LARECOMP_SAMPLE_OUT), per
++// thread, as the game's functions:
++// - Recompiled: the pc in botwgame.so, mapped back through its tables (gamelib.h) to f_<guest address>, the names
++//   fnprof.txt and the generated code use (main at 0x7000000000).
++// - Native: the pc is the game's own, at its guest address: main+<offset>, the same 0x7000000000 naming.
++// fnprof only counts entries (a small function called a million times looks hot); this is time.
++// Only addresses and counts, nothing of the game: the file can go with a report.
++#define _GNU_SOURCE
++#include <signal.h>
++#include <stdatomic.h>
++#include <stdint.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <sys/mman.h>
++#include <sys/syscall.h>
++#include <time.h>
++#include <ucontext.h>
++#include <unistd.h>
++
++#include "gamelib.h"
++#include "rt.h"
++
++#define NSAMPLE (1 << 20)  // (~16 min of one busy thread at 1 kHz; later samples are dropped)
++typedef struct { uint64_t pc, lr; uint32_t tid; } Sample;
++static Sample *g_buf;
++static atomic_uint g_n;
++static atomic_int g_on;
++static int g_from = -2, g_to;
++
++#define NTHREAD 128
++static struct { uint32_t tid; uint64_t id; } g_threads[NTHREAD];
++static atomic_int g_nthreads;
++
++static void on_prof(int sig, siginfo_t *si, void *ctx) {
++    (void)sig, (void)si;
++    if (!atomic_load_explicit(&g_on, memory_order_relaxed)) return;
++    unsigned i = atomic_fetch_add_explicit(&g_n, 1, memory_order_relaxed);
++    if (i >= NSAMPLE) return;
++#if defined(__aarch64__)
++    const ucontext_t *uc = ctx;
++    g_buf[i].pc = uc->uc_mcontext.pc;
++    g_buf[i].lr = uc->uc_mcontext.regs[30];
++#else
++    (void)ctx;
++    g_buf[i].pc = g_buf[i].lr = 0;
++#endif
++    g_buf[i].tid = (uint32_t)syscall(SYS_gettid);
++}
++
++static bool sampler_enabled(void) {
++    if (g_from == -2) {
++        g_from = -1;
++        const char *e = getenv("LARECOMP_SAMPLE");
++        if (e && (sscanf(e, "%d:%d", &g_from, &g_to) != 2 || g_to <= g_from)) g_from = -1;
++        if (g_from >= 0) {
++            g_buf = mmap(NULL, sizeof(Sample) * NSAMPLE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
++            if (g_buf == MAP_FAILED) g_buf = NULL, g_from = -1;
++            struct sigaction sa = {0};
++            sa.sa_sigaction = on_prof;
++            sa.sa_flags = SA_SIGINFO | SA_RESTART;
++            sigemptyset(&sa.sa_mask);
++            if (g_buf) sigaction(SIGPROF, &sa, NULL);
++            LOG("[sample] frames %d-%d: %s\n", g_from, g_to, g_buf ? "armed" : "no memory, off");
++        }
++    }
++    return g_from >= 0;
++}
++
++// A game thread starts (kernel.c thread_main; id: the game's thread id, the t<N> of the logs)
++void sampler_thread_start(uint64_t id) {
++    static atomic_flag lock = ATOMIC_FLAG_INIT;  // (the first call arms it; threads start one by one anyway)
++    while (atomic_flag_test_and_set(&lock)) {}
++    bool on = sampler_enabled();
++    atomic_flag_clear(&lock);
++    if (!on) return;
++    uint32_t tid = (uint32_t)syscall(SYS_gettid);
++    int k = atomic_fetch_add(&g_nthreads, 1);
++    if (k < NTHREAD) g_threads[k].tid = tid, g_threads[k].id = id;
++    struct sigevent sev = {0};
++    sev.sigev_notify = SIGEV_THREAD_ID;
++    sev.sigev_signo = SIGPROF;
++#ifdef sigev_notify_thread_id
++    sev.sigev_notify_thread_id = (pid_t)tid;
++#else
++    sev._sigev_un._tid = (pid_t)tid;
++#endif
++    timer_t t;
++    if (timer_create(CLOCK_THREAD_CPUTIME_ID, &sev, &t)) {
++        LOG("[sample] t%llu: no timer\n", (unsigned long long)id);
++        return;
++    }
++    struct itimerspec its = {{0, 1000000}, {0, 1000000}};  // (1 ms of the thread's own CPU time)
++    timer_settime(t, 0, &its, NULL);
++}
++
++// ---- the report
++typedef struct { uintptr_t host; uint64_t guest; } FnMap;
++static FnMap *g_map;
++static size_t g_nmap;
++static int cmp_host(const void *a, const void *b) {
++    uintptr_t x = ((const FnMap *)a)->host, y = ((const FnMap *)b)->host;
++    return x < y ? -1 : x > y;
++}
++static void build_map(void) {
++    const GameLibTables *t = gamelib_tables();
++    if (!t) return;
++    size_t nm = *t->main_count, ns = *t->sdk_count;
++    g_map = malloc(sizeof(FnMap) * (nm + ns));
++    if (!g_map) return;
++    for (size_t i = 0; i < nm; i++)
++        if (t->main_fns[i]) g_map[g_nmap++] = (FnMap){(uintptr_t)t->main_fns[i], t->main_addrs[i]};
++    for (size_t i = 0; i < ns; i++)
++        if (t->sdk_fns[i]) g_map[g_nmap++] = (FnMap){(uintptr_t)t->sdk_fns[i], t->sdk_addrs[i]};
++    qsort(g_map, g_nmap, sizeof *g_map, cmp_host);
++}
++// A pc as the game function it is in: f_<guest address> (0: neither the game library nor guest code)
++static uint64_t pc_guest(uint64_t pc) {
++    if (pc >= MAIN_BASE && pc < MAIN_BASE + 0x10000000ull)  // (native: the game's own code at its guest address)
++        return pc - MAIN_BASE + 0x7000000000ull;
++    if (!g_nmap || pc < g_map[0].host) return 0;
++    size_t lo = 0, hi = g_nmap;
++    while (hi - lo > 1) {
++        size_t mid = (lo + hi) / 2;
++        if (g_map[mid].host <= pc) lo = mid; else hi = mid;
++    }
++    if (pc - g_map[lo].host > 0x100000) return 0;  // (past the game code: the runtime's)
++    return g_map[lo].guest;
++}
++
++typedef struct { uint64_t key, key2; uint32_t count; } Row;
++static int cmp_count(const void *a, const void *b) {
++    uint32_t x = ((const Row *)a)->count, y = ((const Row *)b)->count;
++    return x < y ? 1 : x > y ? -1 : 0;
++}
++static int cmp_key(const void *a, const void *b) {
++    const Row *x = a, *y = b;
++    if (x->key != y->key) return x->key < y->key ? -1 : 1;
++    return x->key2 < y->key2 ? -1 : x->key2 > y->key2;
++}
++// rows (key, key2) counted: sorted by key, then merged, then by count
++static size_t tally(Row *r, size_t n) {
++    qsort(r, n, sizeof *r, cmp_key);
++    size_t m = 0;
++    for (size_t i = 0; i < n; i++) {
++        if (m && r[m - 1].key == r[i].key && r[m - 1].key2 == r[i].key2) r[m - 1].count += r[i].count;
++        else r[m++] = r[i];
++    }
++    qsort(r, m, sizeof *r, cmp_count);
++    return m;
++}
++
++static void sampler_write(void) {
++    unsigned n = atomic_load(&g_n);
++    if (n > NSAMPLE) n = NSAMPLE;
++    build_map();
++    const char *out = getenv("LARECOMP_SAMPLE_OUT") ? getenv("LARECOMP_SAMPLE_OUT") : "build/samples.txt";
++    FILE *f = fopen(out, "w");
++    if (!f) { LOG("[sample] cannot write %s\n", out); return; }
++    fprintf(f, "# BOTWRecompAndroid samples of each game thread's CPU time (1 ms timer, at the kernel's tick), frames %d-%d\n", g_from, g_to);
++    fprintf(f, "# game_version %d\n# mode %s\n# samples %u\n", g_game_version, g_nmap ? "recompiled" : "native", n);
++    Row *r = malloc(sizeof(Row) * (n ? n : 1));
++    int nt = atomic_load(&g_nthreads);
++    if (nt > NTHREAD) nt = NTHREAD;
++    // per thread: its samples, and how many fell in the game's code (the rest: the runtime, the kernel's services)
++    fprintf(f, "\n## threads (id tid samples in_game)\n");
++    for (int k = 0; k < nt && r; k++) {
++        unsigned s = 0, g = 0;
++        for (unsigned i = 0; i < n; i++)
++            if (g_buf[i].tid == g_threads[k].tid) s++, g += pc_guest(g_buf[i].pc) != 0;
++        if (s) fprintf(f, "t%llu %u %u %u\n", (unsigned long long)g_threads[k].id, g_threads[k].tid, s, g);
++    }
++    // per thread, its top functions (key: tid, key2: function)
++    for (int k = 0; k < nt && r; k++) {
++        size_t m = 0;
++        unsigned total = 0;
++        for (unsigned i = 0; i < n; i++)
++            if (g_buf[i].tid == g_threads[k].tid) r[m++] = (Row){0, pc_guest(g_buf[i].pc), 1}, total++;
++        if (total < 50) continue;
++        m = tally(r, m);
++        fprintf(f, "\n## t%llu: top functions (function samples %%; f_0: outside the game code)\n",
++                (unsigned long long)g_threads[k].id);
++        for (size_t i = 0; i < m && i < 150; i++)
++            fprintf(f, "f_%llx %u %.2f\n", (unsigned long long)r[i].key2, r[i].count, 100.0 * r[i].count / total);
++        // (and the top 25 in the log too: Settings > Files > Save a log file sends them, no Android/data to dig in)
++        LOG("[sample] t%llu: %u samples, top:", (unsigned long long)g_threads[k].id, total);
++        for (size_t i = 0; i < m && i < 25; i++)
++            LOG(" f_%llx %.1f%%", (unsigned long long)r[i].key2, 100.0 * r[i].count / total);
++        LOG("\n");
++    }
++    // every thread: function <- its caller (from lr), the context of the hot ones
++    if (r) {
++        size_t m = 0;
++        for (unsigned i = 0; i < n; i++) {
++            uint64_t fn = pc_guest(g_buf[i].pc);
++            if (fn) r[m++] = (Row){fn, pc_guest(g_buf[i].lr), 1};
++        }
++        m = tally(r, m);
++        fprintf(f, "\n## all game threads: function caller samples\n");
++        for (size_t i = 0; i < m && i < 300; i++)
++            fprintf(f, "f_%llx f_%llx %u\n", (unsigned long long)r[i].key, (unsigned long long)r[i].key2, r[i].count);
++    }
++    free(r);
++    fclose(f);
++    LOG("[sample] %u samples of %d threads, written %s\n", n, nt, out);
++}
++
++// Each presented frame (nvn/vulkan/device.c, beside fnprof_frame)
++void sampler_frame(uint64_t frame) {
++    if (g_from < 0) return;
++    if ((int64_t)frame == g_from) {
++        atomic_store(&g_n, 0);
++        atomic_store(&g_on, 1);
++        LOG("[sample] on at frame %llu\n", (unsigned long long)frame);
++    } else if ((int64_t)frame == g_to && atomic_load(&g_on)) {
++        atomic_store(&g_on, 0);
++        sampler_write();
++        g_from = -1;
++    }
++}
+-- 
+2.43.0
+
+
+From 3782716c2807aafe51ab03cab66f7198570a9632 Mon Sep 17 00:00:00 2001
+From: BOTW perf <noreply@anthropic.com>
+Date: Thu, 12 Nov 2026 00:20:01 +0000
+Subject: [PATCH 5/7] 1.9.0: World detail - nearer actors, grass and distant
+ trees (actor_distance, 0.6 in Lite)
+
+The placed actors' traverse distance scale, the grass blades' view region, both grass layers' fades
+and the terrain's distant trees, times a factor (far models a milder one). Fewer actors for the game's
+thread to update and fewer draws for the render thread. Sites from SavageWindRecomp (MIT); Recompiled
+mode patches all six, Native mode five (the trees' site is a PC-relative adrp).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01EvHfzrxmgqUumCfN8U5uyT
+---
+ README.md                  |  3 +-
+ runtime/hle/world_detail.c | 94 ++++++++++++++++++++++++++++++++++++++
+ runtime/native.c           | 28 ++++++++++++
+ runtime/settings.c         |  4 ++
+ runtime/settings.h         |  2 +
+ tools/patches.py           | 58 +++++++++++++++++++++++
+ 6 files changed, 188 insertions(+), 1 deletion(-)
+ create mode 100644 runtime/hle/world_detail.c
+
+diff --git a/README.md b/README.md
+index 14c4f98..df25f70 100644
+--- a/README.md
++++ b/README.md
+@@ -146,7 +146,8 @@ Current goal: buy a **POCO X7 Pro ($455)**, a test device equipped with a MediaT
+ - [LASRecompAndroid](https://github.com/mamcjr/LASRecompAndroid), its Android port: the app, the phone-side game code
+   build, touch controls, mods, driver compatibility and the Portuguese menus.
+ - [Revivedx](https://github.com/Revivedx) for [SavageWindRecomp](https://github.com/Revivedx/SavageWindRecomp) (MIT),
+-  the reference for 1.8.2: frame pacing, internal resolution, the SDK 20 kernel fixes, setjmp.
++  the reference for 1.8.2: frame pacing, internal resolution, the SDK 20 kernel fixes, setjmp; and for 1.9.0's
++  actor, grass and distant tree distances (World detail, runtime/hle/world_detail.c).
+ - [Nycolazs](https://github.com/Nycolazs) for LASRecomp-Android-Plus (MIT): Vulkan driver compatibility.
+ - [ly05010419](https://github.com/ly05010419) for [MacNativeGames](https://github.com/ly05010419/MacNativeGames) (MIT),
+   whose fixes and notes for BOTW and TOTK pointed the way for several here: the sync lag (its PR #680), GPU results
+diff --git a/runtime/hle/world_detail.c b/runtime/hle/world_detail.c
+new file mode 100644
+index 0000000..1db2245
+--- /dev/null
++++ b/runtime/hle/world_detail.c
+@@ -0,0 +1,94 @@
++// Video > World detail (Settings.actor_distance; LARECOMP_ACTOR_DIST=<factor>): how far from the camera 1.9.0 keeps
++// the actors placed on the map, makes its grass and draws its distant trees - for weak phones, where the game's own
++// thread (the actors it updates) and the render thread (the draws) are the limit. 1 (or 0 in the ini): the game's
++// own values, bit for bit.
++//
++// The sites and what they mean come from SavageWindRecomp (Revivedx, MIT: tools/game_sites.py, tools/patches.py,
++// runtime/draw_distance.c), whose Potato preset measured fewer actors as more fps on a 4-core PC (0.6 of the game's
++// distances: Rito Village 101 -> 120 fps, Kakariko 148 -> 159). This is this port's own, smaller take, nearer only:
++// - Placed actors (1.9.0 0x70010a4674 / 0x70010a4694): every one exists only within its traverse distance of the
++//   camera, its ActorInfo traverseDist (100 m when unset) times a scale that is 1 in the released game. The scale is
++//   multiplied here: the game itself makes fewer actors, with its own rules. Far models (a distance of FAR_DIST m or
++//   more: "_Far" buildings, the castle, the mountains' rocks) take a milder factor, so the horizon keeps its shapes.
++// - Grass (0x70013ad8b0, the blades' view region; 0x70013a85d0 / 0x70013baa5c, each layer's fade): fewer cells made
++//   and drawn, fading out nearer.
++// - The terrain's distant trees (0x70013c94ac, Recompiled mode only: its site is a PC-relative adrp): their ranges
++//   at +0x14cb0 times the far factor.
++#include <math.h>
++#include <stdint.h>
++#include <stdlib.h>
++#include <string.h>
++
++#include "../hle.h"
++#include "../rt.h"
++#include "../settings.h"
++
++#define FAR_DIST 2000.0f
++#define MIN_FACTOR 0.4f  // (nearer, Link's own surroundings thin out: enemies and trees appear a few metres away)
++
++static float bits_f(uint32_t u) { float f; memcpy(&f, &u, 4); return f; }
++static uint32_t f_bits(float f) { uint32_t u; memcpy(&u, &f, 4); return u; }
++
++float world_detail_factor(void) {
++    static float env = -1;
++    if (env < 0) {
++        const char *e = getenv("LARECOMP_ACTOR_DIST");
++        env = e ? (float)atof(e) : 0;
++    }
++    float f = env > 0 ? env : g_settings.actor_distance;
++    if (!(f > 0) || f >= 1.0f) return 1.0f;  // (more than the game's isn't offered here: weak phones)
++    return f < MIN_FACTOR ? MIN_FACTOR : f;
++}
++// The far models' and the distant trees': halfway between the game's and the actors' factor
++static float far_factor(void) { return 0.5f + 0.5f * world_detail_factor(); }
++
++// the traverse distance scale (float bits) as the game has it, and the actor's own distance (float bits; 0 or less:
++// the game takes 100) -> the scale to use
++uint32_t rt_traverse_scale(uint32_t scale, uint32_t dist) {
++    float f = world_detail_factor();
++    if (f == 1.0f) return scale;
++    float s = bits_f(scale), d = bits_f(dist);
++    float game = (d > 0 ? d : 100.0f) * s;
++    static int logged;
++    if (!logged) logged = 1, LOG("[world] actors at %.2f of the game's distances, far models %.2f\n", f, far_factor());
++    return f_bits(s * (game >= FAR_DIST ? far_factor() : f));
++}
++
++// a grass layer's fade scale (float bits; its fades go as 1 / (k * distance)) as the game stores it once a frame ->
++// the one to store: k / factor, so the grass fades out that much nearer
++uint32_t rt_grass_fade(uint32_t k) {
++    float f = world_detail_factor();
++    return f == 1.0f ? k : f_bits(bits_f(k) / f);
++}
++
++// the grass's view context (cam: x2, cell: s3 the layer's cell size): s0 the least tan(fovy / 2) it takes, s1 / s2 its
++// screen-size limits (float bits). The region the blades (3 m cells) make cells in reaches about
++// 1 / (max(tan, s0) * s1): the limits over the factor bring it nearer, and s0 times it keeps the narrowest view's
++// reach (1 / (s0 * s1)) where the game has it. The crossed quads (10 m) keep their region: their fade does it.
++int rt_grass_range(uint64_t cam, uint32_t cell, uint32_t *s0, uint32_t *s1, uint32_t *s2) {
++    (void)cam;
++    float f = world_detail_factor();
++    if (f == 1.0f || fabsf(bits_f(cell) - 3.0f) > 0.01f) return 0;
++    *s0 = f_bits(bits_f(*s0) * f);
++    *s1 = f_bits(bits_f(*s1) / f);
++    *s2 = f_bits(bits_f(*s2) / f);
++    return 1;
++}
++
++// the terrain's distant trees (x0 of their per-frame shader setup): their five ranges at +0x14cb0 (fade in, its
++// length, the end, the fade out, where their blocks change detail), the game's latest values times the far factor.
++// The game writes them again as it plays, so values that aren't the ones last set here are its new ones.
++void rt_tree_ranges(uint64_t tree) {
++    float f = world_detail_factor();
++    if (f == 1.0f || !tree) return;
++    f = far_factor();
++    static struct { uint64_t obj; float set[5]; } seen[8];
++    float *r = (float *)(uintptr_t)(tree + 0x14cb0);
++    int i = 0;
++    while (i < 8 && seen[i].obj && seen[i].obj != tree) i++;
++    if (i == 8) i = 7;  // (more than 8 tree objects: the last slot is shared, each one scaled from its own values)
++    bool known = seen[i].obj == tree;
++    seen[i].obj = tree;
++    for (int k = 0; k < 5; k++)  // (each value on its own: one the game wrote again is scaled, the others stay)
++        if (!known || r[k] != seen[i].set[k]) seen[i].set[k] = r[k] = r[k] * f;
++}
+diff --git a/runtime/native.c b/runtime/native.c
+index 2a4042c..20676cd 100644
+--- a/runtime/native.c
++++ b/runtime/native.c
+@@ -194,6 +194,29 @@ static int fix_tag_null(Cpu *c) {
+     c->x[0] = 0;
+     return 2;
+ }
++// 1.9.0's World detail (hle/world_detail.c; tools/patches.py _traverse_scale_190 and the others). The distant trees'
++// site is a PC-relative adrp, which the stub can't run from elsewhere: Recompiled mode only.
++uint32_t rt_traverse_scale(uint32_t scale, uint32_t dist);
++uint32_t rt_grass_fade(uint32_t k);
++int rt_grass_range(uint64_t cam, uint32_t cell, uint32_t *s0, uint32_t *s1, uint32_t *s2);
++static int fix_traverse(Cpu *c) {
++    c->v[1] = rt_traverse_scale(*(const uint32_t *)(uintptr_t)(c->x[8] + 0x310), (uint32_t)c->v[0]);
++    return 3;
++}
++static int fix_traverse_default(Cpu *c) { c->v[1] = rt_traverse_scale(0x3f800000u, (uint32_t)c->v[0]); return 3; }
++static int fix_grass_range(Cpu *c) {
++    uint32_t s0 = (uint32_t)c->v[0], s1 = (uint32_t)c->v[1], s2 = (uint32_t)c->v[2];
++    if (rt_grass_range(c->x[2], (uint32_t)c->v[3], &s0, &s1, &s2)) c->v[0] = s0, c->v[1] = s1, c->v[2] = s2;
++    return 0;
++}
++static int fix_grass_fade_blades(Cpu *c) {
++    *(uint32_t *)(uintptr_t)(c->x[27] + 0x240) = rt_grass_fade((uint32_t)c->v[0]);
++    return 3;
++}
++static int fix_grass_fade_quads(Cpu *c) {
++    *(uint32_t *)(uintptr_t)(c->x[24] + 0x4) = rt_grass_fade((uint32_t)c->v[0]);
++    return 3;
++}
+ typedef struct { int version; uint64_t addr, alt; uint32_t word; int (*fn)(Cpu *); const char *what; } Fix;
+ static const Fix fixes[] = {  // (canonical addresses, 0x7000000000 + the offset in main)
+     {100, 0x70010c1aa0, 0x70010c1ad8, 0xf9400008, fix_clustered_100, "ClusteredRenderer teardown"},
+@@ -211,6 +234,11 @@ static const Fix fixes[] = {  // (canonical addresses, 0x7000000000 + the offset
+     {190, 0x7000eb4a44, 0, 0xbd409800, fix_persp_matrix, "projection matrix"},
+     {190, 0x7000eb4a28, 0, 0xbd40b000, fix_persp_aspect, "projection aspect"},
+     {190, 0x700120bc48, 0, 0xf9404500, fix_tag_null, "tag check, no target yet"},
++    {190, 0x70010a4674, 0, 0xbd431101, fix_traverse, "actors: traverse distance scale"},
++    {190, 0x70010a4694, 0, 0x1e2e1001, fix_traverse_default, "actors: traverse distance scale (default)"},
++    {190, 0x70013ad8b0, 0, 0xbd400024, fix_grass_range, "grass: view region"},
++    {190, 0x70013a85d0, 0, 0xbd024360, fix_grass_fade_blades, "grass blades: fade"},
++    {190, 0x70013baa5c, 0, 0xbd000700, fix_grass_fade_quads, "grass quads: fade"},
+ };
+ int native_patch_c(Cpu *c, uint32_t i) { return fixes[i].fn(c); }
+ 
+diff --git a/runtime/settings.c b/runtime/settings.c
+index 694001d..695d7f8 100644
+--- a/runtime/settings.c
++++ b/runtime/settings.c
+@@ -42,6 +42,7 @@ Settings g_settings = {
+     .aspect = LITE(ASPECT_UNLOCKED, ASPECT_ORIGINAL),
+     .aspect_asked = LITE(false, true),  // (Lite: 16:9 without the start screen's question)
+     .draw_distance = LITE(0, 8000),
++    .actor_distance = LITE(0, 0.6f),  // (Lite: SavageWindRecomp's Potato, 0.6 of the game's)
+     .fullscreen = false,
+     .volume = 1.0f,
+     .reverb = true,
+@@ -221,6 +222,7 @@ void settings_reset_defaults(void) {
+     g_settings.out_lines = d->out_lines;
+     g_settings.antialias = d->antialias;
+     g_settings.draw_distance = d->draw_distance;
++    g_settings.actor_distance = d->actor_distance;
+     g_settings.volume = d->volume;
+     g_settings.reverb = d->reverb;
+     g_settings.movie_audio = d->movie_audio;
+@@ -263,6 +265,7 @@ void settings_load(void) {
+         if (sscanf(line, " %63[^= ] = %127[^\r\n]", key, val) < 1) continue; val[strcspn(val, "\r\n")] = 0;
+ #endif
+         if (!strcmp(key, "draw_distance")) g_settings.draw_distance = atoi(val) > 0 ? atoi(val) : 0;
++        else if (!strcmp(key, "actor_distance")) g_settings.actor_distance = atof(val) > 0 ? (float)atof(val) : 0;
+         else if (!strcmp(key, "aspect")) g_settings.aspect = !strcmp(val, "original") ? ASPECT_ORIGINAL : ASPECT_UNLOCKED;
+         else if (!strcmp(key, "fullscreen")) g_settings.fullscreen = atoi(val) != 0;
+         else if (!strcmp(key, "volume")) g_settings.volume = (float)atof(val);
+@@ -429,6 +432,7 @@ void settings_save(void) {
+     fprintf(f, "language = %s\n", g_language_codes[g_settings.language > LANG_AUTO && g_settings.language < N_LANGUAGES
+                                                      ? g_settings.language : LANG_AUTO]);
+     fprintf(f, "draw_distance = %d\n", g_settings.draw_distance);
++    fprintf(f, "actor_distance = %.2f\n", g_settings.actor_distance);
+     fprintf(f, "aspect_asked = %d\n", g_settings.aspect_asked);
+     fprintf(f, "menu_tip_seen = %d\n", g_settings.menu_tip_seen);
+     fprintf(f, "mods_off = %s\n", g_settings.mods_off);
+diff --git a/runtime/settings.h b/runtime/settings.h
+index a2832e4..49c9d71 100644
+--- a/runtime/settings.h
++++ b/runtime/settings.h
+@@ -84,6 +84,8 @@ typedef struct {
+     int draw_distance;   // the main camera's far plane in metres (0: the game's own, 25000): smaller cuts what lies
+                          // beyond it - fewer draws for the GPU and the render thread, a shorter horizon (1.8.2 / 1.9.0:
+                          // hle/widescreen.c rt_persp_update; experimental, for weak phones). LARECOMP_FAR=<m> wins
++    float actor_distance; // 1.9.0's World detail (hle/world_detail.c): the placed actors', grass and distant trees'
++                          // distances times this (0 / 1: the game's own; 0.4-1). LARECOMP_ACTOR_DIST=<factor> wins
+     int language;        // LANG_AUTO or an index into g_language_codes: the game's text language
+     bool aspect_asked;   // the start screen's one-time "authentic 16:9 or unlocked?" question was answered
+     bool menu_tip_seen;  // the start screen's one-time "how to open the menu" note was shown (first PLAY ever)
+diff --git a/tools/patches.py b/tools/patches.py
+index ca14739..ecaed93 100644
+--- a/tools/patches.py
++++ b/tools/patches.py
+@@ -134,6 +134,64 @@ PATCHES_190[0x7000eb4a44] = _persp_matrix_182
+ PATCHES_190[0x7000eb4a28] = _persp_get_aspect_182
+ 
+ 
++# v1.9.0, World detail (runtime/hle/world_detail.c; the sites from SavageWindRecomp's tools/game_sites.py, MIT): the
++# placed actors' traverse distance scale (from the actor debug manager at +0x310, or 1.0 without it - the released
++# game), the grass blades' view region and both grass layers' fades, the terrain's distant trees. Each returns the
++# game's own values while the setting is 1.
++def _traverse_scale_190(gen, a):
++    w = struct.unpack_from('<I', gen.nso.image, a - gen.base)[0]
++    assert w == 0xbd431101, hex(w)  # ldr s1, [x8, #0x310]
++    return ('{ extern uint32_t rt_traverse_scale(uint32_t, uint32_t); '
++            'c->v[1] = rt_traverse_scale(LD32(c->x[8] + 0x310), (uint32_t)c->v[0]); }'
++            f'  /* {a:#x}: ldr s1, [x8, #0x310] (actors: traverse distance scale; tools/patches.py) */')
++
++
++def _traverse_scale_default_190(gen, a):
++    w = struct.unpack_from('<I', gen.nso.image, a - gen.base)[0]
++    assert w == 0x1e2e1001, hex(w)  # fmov s1, #1.0
++    return ('{ extern uint32_t rt_traverse_scale(uint32_t, uint32_t); '
++            'c->v[1] = rt_traverse_scale(0x3f800000u, (uint32_t)c->v[0]); }'
++            f'  /* {a:#x}: fmov s1, #1.0 (actors: traverse distance scale; tools/patches.py) */')
++
++
++def _grass_range_190(gen, a):
++    w = struct.unpack_from('<I', gen.nso.image, a - gen.base)[0]
++    assert w == 0xbd400024, hex(w)  # ldr s4, [x1]
++    return ('{ extern int rt_grass_range(uint64_t, uint32_t, uint32_t *, uint32_t *, uint32_t *); '
++            'uint32_t s0 = (uint32_t)c->v[0], s1 = (uint32_t)c->v[1], s2 = (uint32_t)c->v[2]; '
++            'if (rt_grass_range(c->x[2], (uint32_t)c->v[3], &s0, &s1, &s2)) { c->v[0] = s0; c->v[1] = s1; c->v[2] = s2; } '
++            'c->v[4] = LD32(c->x[1]); }'
++            f'  /* {a:#x}: ldr s4, [x1] (grass: view region; tools/patches.py) */')
++
++
++def _grass_fade_190(base, off):
++    def patch(gen, a):
++        w = struct.unpack_from('<I', gen.nso.image, a - gen.base)[0]
++        assert w == 0xbd000000 | ((off // 4) << 10) | (base << 5), hex(w)  # str s0, [x<base>, #off]
++        return ('{ extern uint32_t rt_grass_fade(uint32_t); '
++                f'ST32(c->x[{base}] + {off:#x}, rt_grass_fade((uint32_t)c->v[0])); }}'
++                f'  /* {a:#x}: str s0, [x{base}, #{off:#x}] (grass: fade scale; tools/patches.py) */')
++    return patch
++
++
++def _tree_ranges_190(gen, a):
++    w = struct.unpack_from('<I', gen.nso.image, a - gen.base)[0]
++    assert w & 0x9f00001f == 0x90000008, hex(w)  # adrp x8, <page>
++    imm = ((w >> 29) & 3) | (((w >> 5) & 0x7ffff) << 2)
++    if imm & (1 << 20):
++        imm -= 1 << 21
++    page = (a & ~0xfff) + (imm << 12)
++    return (f'{{ extern void rt_tree_ranges(uint64_t); rt_tree_ranges(c->x[0]); c->x[8] = {page:#x}ull; }}'
++            f'  /* {a:#x}: adrp x8, {page:#x} (distant trees: ranges; tools/patches.py) */')
++
++
++PATCHES_190[0x70010a4674] = _traverse_scale_190
++PATCHES_190[0x70010a4694] = _traverse_scale_default_190
++PATCHES_190[0x70013ad8b0] = _grass_range_190
++PATCHES_190[0x70013a85d0] = _grass_fade_190(27, 0x240)
++PATCHES_190[0x70013baa5c] = _grass_fade_190(24, 0x4)
++PATCHES_190[0x70013c94ac] = _tree_ranges_190
++
+ def patches_for(build_id):
+     """The patches for a module, by its build id (sdk and anything unknown: none)."""
+     return {BUILD_1_0_0: PATCHES, BUILD_1_6_0: PATCHES_160, BUILD_1_8_2: PATCHES_182, BUILD_1_9_0: PATCHES_190}.get(build_id[:32], {})
+-- 
+2.43.0
+
+
+From d9a06977ad447a711c29574ffe9c3f33365850f7 Mon Sep 17 00:00:00 2001
+From: BOTW perf <noreply@anthropic.com>
+Date: Thu, 12 Nov 2026 00:27:45 +0000
+Subject: [PATCH 6/7] World detail: the trees' hand-off kept, grass at the
+ game's own by default
+
+The terrain's distant trees fade in where the actor trees end: their fade-in start and length now follow
+the actors' factor (with the far factor the two didn't meet: trees popped in at the seam). Grass gets its
+own factor (grass_distance / LARECOMP_GRASS_DIST), the game's own by default, Lite too; Lite's actors 0.7.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01EvHfzrxmgqUumCfN8U5uyT
+---
+ runtime/hle/world_detail.c | 28 ++++++++++++++++++++++------
+ runtime/settings.c         |  7 +++++--
+ runtime/settings.h         |  1 +
+ 3 files changed, 28 insertions(+), 8 deletions(-)
+
+diff --git a/runtime/hle/world_detail.c b/runtime/hle/world_detail.c
+index 1db2245..568669e 100644
+--- a/runtime/hle/world_detail.c
++++ b/runtime/hle/world_detail.c
+@@ -39,6 +39,19 @@ float world_detail_factor(void) {
+     if (!(f > 0) || f >= 1.0f) return 1.0f;  // (more than the game's isn't offered here: weak phones)
+     return f < MIN_FACTOR ? MIN_FACTOR : f;
+ }
++// The grass's own (Settings.grass_distance; LARECOMP_GRASS_DIST=<factor>): 0 / 1 the game's, whatever the actors' -
++// grass that ends nearer is the most visible cut, and its cost is the GPU's and the render thread's more than the
++// game's own thread
++static float grass_factor(void) {
++    static float env = -1;
++    if (env < 0) {
++        const char *e = getenv("LARECOMP_GRASS_DIST");
++        env = e ? (float)atof(e) : 0;
++    }
++    float f = env > 0 ? env : g_settings.grass_distance;
++    if (!(f > 0) || f >= 1.0f) return 1.0f;
++    return f < MIN_FACTOR ? MIN_FACTOR : f;
++}
+ // The far models' and the distant trees': halfway between the game's and the actors' factor
+ static float far_factor(void) { return 0.5f + 0.5f * world_detail_factor(); }
+ 
+@@ -57,7 +70,7 @@ uint32_t rt_traverse_scale(uint32_t scale, uint32_t dist) {
+ // a grass layer's fade scale (float bits; its fades go as 1 / (k * distance)) as the game stores it once a frame ->
+ // the one to store: k / factor, so the grass fades out that much nearer
+ uint32_t rt_grass_fade(uint32_t k) {
+-    float f = world_detail_factor();
++    float f = grass_factor();
+     return f == 1.0f ? k : f_bits(bits_f(k) / f);
+ }
+ 
+@@ -67,7 +80,7 @@ uint32_t rt_grass_fade(uint32_t k) {
+ // reach (1 / (s0 * s1)) where the game has it. The crossed quads (10 m) keep their region: their fade does it.
+ int rt_grass_range(uint64_t cam, uint32_t cell, uint32_t *s0, uint32_t *s1, uint32_t *s2) {
+     (void)cam;
+-    float f = world_detail_factor();
++    float f = grass_factor();
+     if (f == 1.0f || fabsf(bits_f(cell) - 3.0f) > 0.01f) return 0;
+     *s0 = f_bits(bits_f(*s0) * f);
+     *s1 = f_bits(bits_f(*s1) / f);
+@@ -79,9 +92,12 @@ int rt_grass_range(uint64_t cam, uint32_t cell, uint32_t *s0, uint32_t *s1, uint
+ // length, the end, the fade out, where their blocks change detail), the game's latest values times the far factor.
+ // The game writes them again as it plays, so values that aren't the ones last set here are its new ones.
+ void rt_tree_ranges(uint64_t tree) {
+-    float f = world_detail_factor();
+-    if (f == 1.0f || !tree) return;
+-    f = far_factor();
++    float near = world_detail_factor();
++    if (near == 1.0f || !tree) return;
++    // (the hand-off: the terrain's trees fade in where the actor trees end, so where that fade starts and how long it
++    // is follow the actors' factor - with the far factor there, the two didn't meet and trees popped in at the
++    // seam; where they end, their fade out and their detail change follow the far models')
++    const float f5[5] = {near, near, far_factor(), far_factor(), far_factor()};
+     static struct { uint64_t obj; float set[5]; } seen[8];
+     float *r = (float *)(uintptr_t)(tree + 0x14cb0);
+     int i = 0;
+@@ -90,5 +106,5 @@ void rt_tree_ranges(uint64_t tree) {
+     bool known = seen[i].obj == tree;
+     seen[i].obj = tree;
+     for (int k = 0; k < 5; k++)  // (each value on its own: one the game wrote again is scaled, the others stay)
+-        if (!known || r[k] != seen[i].set[k]) seen[i].set[k] = r[k] = r[k] * f;
++        if (!known || r[k] != seen[i].set[k]) seen[i].set[k] = r[k] = r[k] * f5[k];
+ }
+diff --git a/runtime/settings.c b/runtime/settings.c
+index 695d7f8..01e78fd 100644
+--- a/runtime/settings.c
++++ b/runtime/settings.c
+@@ -42,7 +42,8 @@ Settings g_settings = {
+     .aspect = LITE(ASPECT_UNLOCKED, ASPECT_ORIGINAL),
+     .aspect_asked = LITE(false, true),  // (Lite: 16:9 without the start screen's question)
+     .draw_distance = LITE(0, 8000),
+-    .actor_distance = LITE(0, 0.6f),  // (Lite: SavageWindRecomp's Potato, 0.6 of the game's)
++    .actor_distance = LITE(0, 0.7f),  // (Lite: the actor trees hand over to the terrain's sooner; bushes past ~105 m go)
++    .grass_distance = 0,              // (the game's own grass, Lite too: no grass ending nearer)
+     .fullscreen = false,
+     .volume = 1.0f,
+     .reverb = true,
+@@ -223,6 +224,7 @@ void settings_reset_defaults(void) {
+     g_settings.antialias = d->antialias;
+     g_settings.draw_distance = d->draw_distance;
+     g_settings.actor_distance = d->actor_distance;
++    g_settings.grass_distance = d->grass_distance;
+     g_settings.volume = d->volume;
+     g_settings.reverb = d->reverb;
+     g_settings.movie_audio = d->movie_audio;
+@@ -266,6 +268,7 @@ void settings_load(void) {
+ #endif
+         if (!strcmp(key, "draw_distance")) g_settings.draw_distance = atoi(val) > 0 ? atoi(val) : 0;
+         else if (!strcmp(key, "actor_distance")) g_settings.actor_distance = atof(val) > 0 ? (float)atof(val) : 0;
++        else if (!strcmp(key, "grass_distance")) g_settings.grass_distance = atof(val) > 0 ? (float)atof(val) : 0;
+         else if (!strcmp(key, "aspect")) g_settings.aspect = !strcmp(val, "original") ? ASPECT_ORIGINAL : ASPECT_UNLOCKED;
+         else if (!strcmp(key, "fullscreen")) g_settings.fullscreen = atoi(val) != 0;
+         else if (!strcmp(key, "volume")) g_settings.volume = (float)atof(val);
+@@ -432,7 +435,7 @@ void settings_save(void) {
+     fprintf(f, "language = %s\n", g_language_codes[g_settings.language > LANG_AUTO && g_settings.language < N_LANGUAGES
+                                                      ? g_settings.language : LANG_AUTO]);
+     fprintf(f, "draw_distance = %d\n", g_settings.draw_distance);
+-    fprintf(f, "actor_distance = %.2f\n", g_settings.actor_distance);
++    fprintf(f, "actor_distance = %.2f\ngrass_distance = %.2f\n", g_settings.actor_distance, g_settings.grass_distance);
+     fprintf(f, "aspect_asked = %d\n", g_settings.aspect_asked);
+     fprintf(f, "menu_tip_seen = %d\n", g_settings.menu_tip_seen);
+     fprintf(f, "mods_off = %s\n", g_settings.mods_off);
+diff --git a/runtime/settings.h b/runtime/settings.h
+index 49c9d71..c77c288 100644
+--- a/runtime/settings.h
++++ b/runtime/settings.h
+@@ -86,6 +86,7 @@ typedef struct {
+                          // hle/widescreen.c rt_persp_update; experimental, for weak phones). LARECOMP_FAR=<m> wins
+     float actor_distance; // 1.9.0's World detail (hle/world_detail.c): the placed actors', grass and distant trees'
+                           // distances times this (0 / 1: the game's own; 0.4-1). LARECOMP_ACTOR_DIST=<factor> wins
++    float grass_distance; // 1.9.0's grass alone (hle/world_detail.c): its region and fades times this (0 / 1: the game's)
+     int language;        // LANG_AUTO or an index into g_language_codes: the game's text language
+     bool aspect_asked;   // the start screen's one-time "authentic 16:9 or unlocked?" question was answered
+     bool menu_tip_seen;  // the start screen's one-time "how to open the menu" note was shown (first PLAY ever)
+-- 
+2.43.0
+
+
+From 6b55166f2c269fe55f26abf9d957b7aab7fb15dc Mon Sep 17 00:00:00 2001
+From: BOTW perf <noreply@anthropic.com>
+Date: Thu, 12 Nov 2026 00:31:29 +0000
+Subject: [PATCH 7/7] 1.9.0: physics solver microsteps capped (solver_cap, 6 in
+ Lite)
+
+At 20 fps the game asks round(1.5 x 6) = 9 Havok solver microsteps a step, half as much again as a
+console frame. Capped at the console's 6 (never under 6). Site from SavageWindRecomp (MIT); both modes.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01EvHfzrxmgqUumCfN8U5uyT
+---
+ runtime/hle/physics_lite.c | 30 ++++++++++++++++++++++++++++++
+ runtime/native.c           |  8 ++++++++
+ runtime/settings.c         |  6 +++++-
+ runtime/settings.h         |  1 +
+ tools/patches.py           | 11 +++++++++++
+ 5 files changed, 55 insertions(+), 1 deletion(-)
+ create mode 100644 runtime/hle/physics_lite.c
+
+diff --git a/runtime/hle/physics_lite.c b/runtime/hle/physics_lite.c
+new file mode 100644
+index 0000000..aae4383
+--- /dev/null
++++ b/runtime/hle/physics_lite.c
+@@ -0,0 +1,30 @@
++// Physics > Solver steps (Settings.solver_cap; LARECOMP_SOLVER_CAP=<n>, 0: the game's): before each Havok step 1.9.0
++// gives the solver round(delta frame x 6) microsteps (0x700156f930; the site from SavageWindRecomp, Revivedx, MIT:
++// tools/game_sites.py phys_solver_steps). 6 at 30 fps - and 9 at 20 fps: a frame of the Lite build's 20 fps mode does
++// half as much solver work again as a console frame, all of it on the game's own threads. At most <n> here: 6 keeps the
++// console's count per step. Fewer than 6 gives way in contacts (SavageWindRecomp's tests: holding a cucco, Link's jump
++// 0.42 m with 4 against ~0.55 with 6), so the cap is never under 6.
++#include <stdint.h>
++#include <stdlib.h>
++
++#include "../hle.h"
++#include "../rt.h"
++#include "../settings.h"
++
++float rt_solver_cap(float delta_frame, float per_frame) {
++    static int env = -2;
++    if (env == -2) {
++        const char *e = getenv("LARECOMP_SOLVER_CAP");
++        env = e ? atoi(e) : -1;
++    }
++    int cap = env >= 0 ? env : g_settings.solver_cap;
++    float steps = delta_frame * per_frame;
++    if (cap <= 0) return steps;  // (the game's own)
++    if (cap < 6) cap = 6;
++    static int logged;
++    if (steps > (float)cap && !logged) {
++        logged = 1;
++        LOG("[physics] solver microsteps %.1f a step -> %d (delta frame %.2f)\n", steps, cap, delta_frame);
++    }
++    return steps > (float)cap ? (float)cap : steps;
++}
+diff --git a/runtime/native.c b/runtime/native.c
+index 20676cd..b9d3ac8 100644
+--- a/runtime/native.c
++++ b/runtime/native.c
+@@ -217,6 +217,13 @@ static int fix_grass_fade_quads(Cpu *c) {
+     *(uint32_t *)(uintptr_t)(c->x[24] + 0x4) = rt_grass_fade((uint32_t)c->v[0]);
+     return 3;
+ }
++float rt_solver_cap(float delta_frame, float per_frame);  // hle/physics_lite.c
++static int fix_solver_cap(Cpu *c) {
++    union { uint32_t u; float f; } d = {.u = (uint32_t)c->v[1]}, k = {.u = (uint32_t)c->v[2]};
++    k.f = rt_solver_cap(d.f, k.f);
++    c->v[2] = k.u;
++    return 3;
++}
+ typedef struct { int version; uint64_t addr, alt; uint32_t word; int (*fn)(Cpu *); const char *what; } Fix;
+ static const Fix fixes[] = {  // (canonical addresses, 0x7000000000 + the offset in main)
+     {100, 0x70010c1aa0, 0x70010c1ad8, 0xf9400008, fix_clustered_100, "ClusteredRenderer teardown"},
+@@ -239,6 +246,7 @@ static const Fix fixes[] = {  // (canonical addresses, 0x7000000000 + the offset
+     {190, 0x70013ad8b0, 0, 0xbd400024, fix_grass_range, "grass: view region"},
+     {190, 0x70013a85d0, 0, 0xbd024360, fix_grass_fade_blades, "grass blades: fade"},
+     {190, 0x70013baa5c, 0, 0xbd000700, fix_grass_fade_quads, "grass quads: fade"},
++    {190, 0x700156f930, 0, 0x1e220822, fix_solver_cap, "physics: solver microsteps"},
+ };
+ int native_patch_c(Cpu *c, uint32_t i) { return fixes[i].fn(c); }
+ 
+diff --git a/runtime/settings.c b/runtime/settings.c
+index 01e78fd..6058df5 100644
+--- a/runtime/settings.c
++++ b/runtime/settings.c
+@@ -43,6 +43,7 @@ Settings g_settings = {
+     .aspect_asked = LITE(false, true),  // (Lite: 16:9 without the start screen's question)
+     .draw_distance = LITE(0, 8000),
+     .actor_distance = LITE(0, 0.7f),  // (Lite: the actor trees hand over to the terrain's sooner; bushes past ~105 m go)
++    .solver_cap = LITE(0, 6),         // (Lite: the console's 6 at 20 fps, not 9)
+     .grass_distance = 0,              // (the game's own grass, Lite too: no grass ending nearer)
+     .fullscreen = false,
+     .volume = 1.0f,
+@@ -225,6 +226,7 @@ void settings_reset_defaults(void) {
+     g_settings.draw_distance = d->draw_distance;
+     g_settings.actor_distance = d->actor_distance;
+     g_settings.grass_distance = d->grass_distance;
++    g_settings.solver_cap = d->solver_cap;
+     g_settings.volume = d->volume;
+     g_settings.reverb = d->reverb;
+     g_settings.movie_audio = d->movie_audio;
+@@ -268,6 +270,7 @@ void settings_load(void) {
+ #endif
+         if (!strcmp(key, "draw_distance")) g_settings.draw_distance = atoi(val) > 0 ? atoi(val) : 0;
+         else if (!strcmp(key, "actor_distance")) g_settings.actor_distance = atof(val) > 0 ? (float)atof(val) : 0;
++        else if (!strcmp(key, "solver_cap")) g_settings.solver_cap = atoi(val) > 0 ? atoi(val) : 0;
+         else if (!strcmp(key, "grass_distance")) g_settings.grass_distance = atof(val) > 0 ? (float)atof(val) : 0;
+         else if (!strcmp(key, "aspect")) g_settings.aspect = !strcmp(val, "original") ? ASPECT_ORIGINAL : ASPECT_UNLOCKED;
+         else if (!strcmp(key, "fullscreen")) g_settings.fullscreen = atoi(val) != 0;
+@@ -435,7 +438,8 @@ void settings_save(void) {
+     fprintf(f, "language = %s\n", g_language_codes[g_settings.language > LANG_AUTO && g_settings.language < N_LANGUAGES
+                                                      ? g_settings.language : LANG_AUTO]);
+     fprintf(f, "draw_distance = %d\n", g_settings.draw_distance);
+-    fprintf(f, "actor_distance = %.2f\ngrass_distance = %.2f\n", g_settings.actor_distance, g_settings.grass_distance);
++    fprintf(f, "actor_distance = %.2f\ngrass_distance = %.2f\nsolver_cap = %d\n", g_settings.actor_distance,
++            g_settings.grass_distance, g_settings.solver_cap);
+     fprintf(f, "aspect_asked = %d\n", g_settings.aspect_asked);
+     fprintf(f, "menu_tip_seen = %d\n", g_settings.menu_tip_seen);
+     fprintf(f, "mods_off = %s\n", g_settings.mods_off);
+diff --git a/runtime/settings.h b/runtime/settings.h
+index c77c288..7d3d7dc 100644
+--- a/runtime/settings.h
++++ b/runtime/settings.h
+@@ -87,6 +87,7 @@ typedef struct {
+     float actor_distance; // 1.9.0's World detail (hle/world_detail.c): the placed actors', grass and distant trees'
+                           // distances times this (0 / 1: the game's own; 0.4-1). LARECOMP_ACTOR_DIST=<factor> wins
+     float grass_distance; // 1.9.0's grass alone (hle/world_detail.c): its region and fades times this (0 / 1: the game's)
++    int solver_cap;       // 1.9.0's physics solver microsteps a step at most (hle/physics_lite.c; 0: the game's, 6+)
+     int language;        // LANG_AUTO or an index into g_language_codes: the game's text language
+     bool aspect_asked;   // the start screen's one-time "authentic 16:9 or unlocked?" question was answered
+     bool menu_tip_seen;  // the start screen's one-time "how to open the menu" note was shown (first PLAY ever)
+diff --git a/tools/patches.py b/tools/patches.py
+index ecaed93..72783ad 100644
+--- a/tools/patches.py
++++ b/tools/patches.py
+@@ -185,6 +185,17 @@ def _tree_ranges_190(gen, a):
+             f'  /* {a:#x}: adrp x8, {page:#x} (distant trees: ranges; tools/patches.py) */')
+ 
+ 
++# v1.9.0, the physics step's solver microsteps (runtime/hle/physics_lite.c rt_solver_cap; the site from
++# SavageWindRecomp's tools/game_sites.py, MIT): s2 = delta frame (s1) x 6 (s2), capped there.
++def _solver_cap_190(gen, a):
++    w = struct.unpack_from('<I', gen.nso.image, a - gen.base)[0]
++    assert w == 0x1e220822, hex(w)  # fmul s2, s1, s2
++    return ('{ extern float rt_solver_cap(float, float); union { uint32_t u; float f; } d = { .u = (uint32_t)c->v[1] }, '
++            'k = { .u = (uint32_t)c->v[2] }; k.f = rt_solver_cap(d.f, k.f); c->v[2] = k.u; }'
++            f'  /* {a:#x}: fmul s2, s1, s2 (physics: solver microsteps; tools/patches.py) */')
++
++
++PATCHES_190[0x700156f930] = _solver_cap_190
+ PATCHES_190[0x70010a4674] = _traverse_scale_190
+ PATCHES_190[0x70010a4694] = _traverse_scale_default_190
+ PATCHES_190[0x70013ad8b0] = _grass_range_190
+-- 
+2.43.0
+
